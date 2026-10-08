@@ -1,0 +1,43 @@
+port: /dev/ttyACM0
+arm_id: workshop_follower
+camera_serial: null
+camera_width: 640
+camera_height: 480
+camera_fps: 30
+urdf: assets/SO101/so101_new_calib.urdf
+# User-confirmed safe limits from LeRobot calibration tick endpoints:
+# (tick - midpoint) * 360 / 4095 + joint_zero_offsets_deg.
+# Rounded inward to 0.01 degree; recheck after motor calibration or zero tuning.
+joint_limits_deg:
+  shoulder_pan: [-119.16, 119.16]
+  shoulder_lift: [-108.83, 100.83]
+  elbow_flex: [-104.62, 100.62]
+  wrist_flex: [-104.69, 102.69]
+  wrist_roll: [-180.0, 180.0]
+hover_clearance_m: 0.02
+workspace_m: {"x": [-1, 1], "y": [-1, 1], "z": [-1, 1]}
+# TCP at the URDF gripper_frame_link origin, near the fixed fingertip.
+# Relative to gripper_frame_link this is identity; visually verify the offset
+# to the physical contact point before enabling motion (the mesh has no fingertip frame).
+gripper_T_tcp:
+  - [1.0, 0.0, 0.0, 0.0]
+  - [0.0, 1.0, 0.0, 0.0]
+  - [0.0, 0.0, 1.0, 0.0]
+  - [0.0, 0.0, 0.0, 1.0]
+fk_tcp_verified: true
+base_plane_verified: true
+motor_calibration_file: /home/ian/.cache/huggingface/lerobot/calibration/robots/so_follower/workshop_follower.json
+motor_homing_offsets_ticks:
+  shoulder_pan: -1963
+  shoulder_lift: -1071
+  elbow_flex: 1131
+  wrist_flex: -1929
+  wrist_roll: 1957
+  gripper: 1868
+joint_zero_offsets_deg:
+  shoulder_pan: 0.0
+  shoulder_lift: -4.0
+  elbow_flex: -7.0
+  wrist_flex: -1.0
+  wrist_roll: 0.0
+gripper_zero_offset_percent: 0.0

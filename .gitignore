@@ -1,0 +1,32 @@
+references/
+
+# Python and uv-generated environments (uv uses .venv by default unless
+# UV_PROJECT_ENVIRONMENT=.uv-so101 is set in the shell).
+.venv/
+.venv-*/
+.uv-so101/
+
+# Build, cache and test outputs.
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Rerun recordings and blueprints generated locally.
+*.rrd
+*.rbl
+
+# Per-station measurements and pinned model downloads (fetched at setup).
+# assets/SO101/
+# config/station.yaml
+# config/calibration.yaml
+
+# VS Code's generated browse database; retain checked-in editor settings.
+.vscode/browse.vc.db*
+.vscode/

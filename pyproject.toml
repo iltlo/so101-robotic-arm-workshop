@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "so101-control"
+version = "0.1.0"
+description = "Follower-only SO-101 workshop: safe control, RGB calibration and visualization"
+requires-python = ">=3.12,<3.14"
+dependencies = ["numpy>=2,<2.3", "scipy>=1.14", "PyYAML>=6", "opencv-python>=4.11,<4.14"]
+
+[project.optional-dependencies]
+ports = ["pyserial>=3.5,<4"]
+hardware = ["lerobot[feetech,placo-dep]==0.6.1"]
+vision = ["pyrealsense2", "pupil-apriltags"]
+twin = ["rerun-sdk>=0.33,<0.34", "pynput>=1.7.8,<1.9"]
+test = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.uv]
+package = true
