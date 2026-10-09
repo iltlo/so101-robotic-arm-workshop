@@ -8,7 +8,8 @@ between the poses. Ctrl-C is not an e-stop; keep the area clear.
 """
 
 from so101_control import SO101
-from so101_utils.config import arm_parser
+from so101_utils.config import arm_parser, load_robot
+from so101_utils.twin import watch_arm
 
 # Metres. Raise z if the gripper would hit the table.
 PICK = (0.22, 0.06, 0.02)
@@ -24,7 +25,9 @@ def jump(arm, x, y, z) -> None:
 if __name__ == "__main__":
     args = arm_parser(__doc__).parse_args()
     with SO101.connect(mock=args.mock) as arm:
-        arm.set_speed(10)
+        if args.mock:
+            watch_arm(arm, load_robot()["urdf"])
+            print("Mock arm is in the Rerun window.")
         print("Homing.")
         arm.home()
         arm.release()

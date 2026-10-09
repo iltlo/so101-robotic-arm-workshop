@@ -61,8 +61,10 @@ def connect_live(config: dict):
     arm_id = config.get("arm_id", "workshop_follower")
     from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
 
+    # No relative cap here. Joint steps are limited in move_joints. The gripper
+    # is 0–100, so a cap of 10 (meant for degrees) clips a normal open/close.
     follower = SO101Follower(SO101FollowerConfig(
-        port=port, id=arm_id, use_degrees=True, max_relative_target=10.0,
+        port=port, id=arm_id, use_degrees=True, max_relative_target=None,
     ))
     try:
         follower.connect(calibrate=False)

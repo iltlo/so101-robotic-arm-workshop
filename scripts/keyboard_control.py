@@ -11,12 +11,15 @@
 
     uv run python scripts/keyboard_control.py --mock
     uv run python scripts/keyboard_control.py --live
+
+--mock opens Rerun and moves that arm. Esc quits.
 """
 
 from pynput import keyboard
 
 from so101_control import SO101
-from so101_utils.config import arm_parser
+from so101_utils.config import arm_parser, load_robot
+from so101_utils.twin import watch_arm
 
 
 class Teleop:
@@ -83,7 +86,9 @@ class Teleop:
 if __name__ == "__main__":
     args = arm_parser(__doc__).parse_args()
     with SO101.connect(mock=args.mock) as arm:
-        arm.set_speed(15)
+        if args.mock:
+            watch_arm(arm, load_robot()["urdf"])
+            print("Mock arm is in the Rerun window.")
         teleop = Teleop(arm)
         print(teleop.arm.get_pose())
         print("Keyboard control. Esc quits. Keep clear of the arm.")

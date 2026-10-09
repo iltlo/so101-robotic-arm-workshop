@@ -15,7 +15,7 @@ def test_context_manager_and_speed_clamp():
         assert np.isfinite([pose.x, pose.y, pose.z]).all()
         arm.set_speed(10)
         with pytest.raises(ValueError):
-            arm.set_speed(100)
+            arm.set_speed(200)
     assert arm._backend.connected is False
 
 
@@ -40,6 +40,16 @@ def test_move_grip_and_home():
         assert arm.get_joints()["gripper"] == pytest.approx(0.0)
         arm.move_to(home.x, home.y, home.z, wait=False)
         arm.wait()
+
+
+def test_tracker_sees_each_motion_step():
+    with SO101.connect(mock=True) as arm:
+        seen = []
+        arm.track(lambda: seen.append(round(arm.get_joints()["shoulder_pan"], 3)))
+        arm.move_joint("shoulder_pan", 1.0)
+    assert seen[0] == 0.0
+    assert seen[-1] == pytest.approx(1.0)
+    assert len(seen) > 2
 
 
 def test_offsets_are_added_on_read_and_removed_on_command():

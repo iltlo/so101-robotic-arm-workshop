@@ -24,8 +24,8 @@ def joint_state(robot) -> dict[str, float]:
 
 def move_joints(robot, targets: dict[str, float], limits: dict[str, tuple[float, float]],
                 *, speed_deg_s: float = 10.0, period_s: float = 0.05,
-                timeout_s: float = 30.0, tolerance_deg: float = 2.0,
-                wait=True) -> dict[str, float]:
+                timeout_s: float = 20.0, tolerance_deg: float = 2.0,
+                wait=True, on_step=None) -> dict[str, float]:
     if not targets or not set(targets) <= set(JOINTS):
         raise ValueError("Unknown or empty joint target")
     if speed_deg_s <= 0 or period_s <= 0 or timeout_s <= 0 or tolerance_deg <= 0:
@@ -52,6 +52,8 @@ def move_joints(robot, targets: dict[str, float], limits: dict[str, tuple[float,
         actual = robot.send_action(desired)
         if any(abs(actual.get(key, float("nan")) - goal) > 1e-3 for key, goal in desired.items()):
             raise MotionError("Driver clipped a goal; no more goals sent")
+        if on_step is not None:
+            on_step()
         if index < steps:
             time.sleep(period_s)
     if wait:
@@ -60,6 +62,8 @@ def move_joints(robot, targets: dict[str, float], limits: dict[str, tuple[float,
                 raise MotionError("Failed to settle before timeout")
             measured = joint_state(robot)
             if all(abs(measured[name] - value) <= tolerance_deg for name, value in targets.items()):
+                if on_step is not None:
+                    on_step()
                 return measured
             time.sleep(period_s)
     return joint_state(robot)

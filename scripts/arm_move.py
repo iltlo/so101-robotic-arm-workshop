@@ -7,7 +7,8 @@
 import time
 
 from so101_control import SO101
-from so101_utils.config import arm_parser
+from so101_utils.config import arm_parser, load_robot
+from so101_utils.twin import watch_arm
 
 # A short triangle in front of the home pose. Edit these if your table differs.
 POINTS = (
@@ -20,7 +21,9 @@ POINTS = (
 if __name__ == "__main__":
     args = arm_parser(__doc__).parse_args()
     with SO101.connect(mock=args.mock) as arm:
-        arm.set_speed(10)
+        if args.mock:
+            watch_arm(arm, load_robot()["urdf"])
+            print("Mock arm is in the Rerun window.")
         print("Homing (all arm joints to 0°).")
         arm.home()
         for point in POINTS:

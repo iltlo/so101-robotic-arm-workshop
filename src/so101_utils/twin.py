@@ -13,7 +13,8 @@ from so101_control.kinematics import JOINTS
 class Twin:
     """One 3D view plus joint and gripper-pose plots."""
 
-    def __init__(self, urdf: str | Path, *, spawn: bool = True, recording: str | None = None):
+    def __init__(self, urdf: str | Path, *, spawn: bool = True, recording: str | None = None,
+                 camera: bool = False):
         import rerun as rr
         import rerun.blueprint as rrb
 
@@ -29,6 +30,7 @@ class Twin:
         if self.jaw is None or self.jaw.joint_type != "revolute":
             raise ValueError("Follower URDF missing gripper jaw joint")
         self.tick = 0
+        self.camera = camera
         rr.init("so101_control", spawn=spawn and recording is None)
         if recording is not None:
             rr.save(recording)
@@ -53,18 +55,24 @@ class Twin:
                                (*colors, [255, 255, 255])):
             rr.log(f"telemetry/ee/{name}", rr.SeriesLines(names=name, colors=color), static=True)
 
+        arm_view = rrb.Spatial3DView(
+            name="SO-101", origin=robot_root,
+            contents=[f"{robot_root}/**", "/tf_static", "/transforms/**"],
+            overrides={f"{robot_root}/collision_geometries": rrb.EntityBehavior(visible=False)},
+        )
+        joint_plot = rrb.TimeSeriesView(name="Joint angles (degrees)", origin="/telemetry/joints")
+        pose_plot = rrb.TimeSeriesView(name="EE XYZ (m) / RPY (deg)", origin="/telemetry/ee")
+        if camera:
+            # The camera image is shown here. Rerun does not send clicks on that
+            # image back to Python, so click-and-go still uses its browser page.
+            side = rrb.Vertical(
+                rrb.Spatial2DView(name="Camera", origin="/camera"),
+                joint_plot,
+            )
+        else:
+            side = rrb.Vertical(joint_plot, pose_plot)
         blueprint = rrb.Blueprint(
-            rrb.Horizontal(
-                rrb.Spatial3DView(
-                    name="SO-101", origin=robot_root,
-                    contents=[f"{robot_root}/**", "/tf_static", "/transforms/**"],
-                    overrides={f"{robot_root}/collision_geometries": rrb.EntityBehavior(visible=False)},
-                ),
-                rrb.Vertical(
-                    rrb.TimeSeriesView(name="Joint angles (degrees)", origin="/telemetry/joints"),
-                    rrb.TimeSeriesView(name="EE XYZ (m) / RPY (deg)", origin="/telemetry/ee"),
-                ),
-            ),
+            rrb.Horizontal(arm_view, side),
             auto_views=False,
         )
         rr.send_blueprint(blueprint)
@@ -112,9 +120,30 @@ class Twin:
             for name, value in zip(("x_m", "y_m", "z_m", "roll_deg", "pitch_deg", "yaw_deg"), (*xyz, *rpy)):
                 self.rr.log(f"telemetry/ee/{name}", self.rr.Scalars(float(value)))
 
+    def log_camera(self, image_bgr) -> None:
+        """Show one RGB frame. `image_bgr` is OpenCV BGR."""
+        import cv2
+
+        if not self.camera:
+            raise RuntimeError("This twin was opened without a camera view")
+        rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        self.rr.log("camera/rgb", self.rr.Image(rgb))
+
     def show(self, arm) -> None:
         state = arm.get_joints()
         self.update(state, ee_pose=arm._kin.fk(state))
+
+
+def watch_arm(arm, urdf: str | Path, *, camera: bool = False) -> Twin:
+    """Open Rerun and redraw the arm after every motion step."""
+    twin = Twin(urdf, camera=camera)
+
+    def refresh() -> None:
+        twin.show(arm)
+        twin.rr.get_global_data_recording().flush(timeout_sec=0)
+
+    arm.track(refresh)
+    return twin
 
 
 def play_demo(arm, twin: Twin) -> None:

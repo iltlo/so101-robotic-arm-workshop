@@ -19,7 +19,7 @@ Not in this workshop: YOLO, depth picking, and the interactive motor-calibration
 
 ## Safety
 
-Clear the table before any `--live` command. Joint speed defaults to 10 deg/s and will not go above 30. Torque off (`T` in the twin, or during hand-eye) lets the arm fall: support it, and keep a power cutoff within reach. Ctrl-C and the keyboard are not emergency stops. There is no collision checker.
+Clear the table before any `--live` command. Joint speed defaults to 60 deg/s and will not go above 120. Change it with `arm.set_speed(...)`. Torque off (`T` in the twin, or during hand-eye) lets the arm fall: support it, and keep a power cutoff within reach. Ctrl-C and the keyboard are not emergency stops. There is no collision checker.
 
 ## 1. Install
 
@@ -80,7 +80,7 @@ uv run python scripts/gripper.py --mock
 uv run python scripts/gripper.py --live
 ```
 
-`arm_move.py` homes (every arm joint to 0°) and visits three points. Change `POINTS` in that file if you want different ones. Gripper percent is 0 closed and 100 open.
+`arm_move.py` homes (every arm joint to 0°) and visits three points. Change `POINTS` in that file if you want different ones. Gripper percent is 0 closed and 100 open. `--mock` on these scripts opens Rerun and moves the drawn arm.
 
 To step a single joint by at most 2°:
 
@@ -90,7 +90,7 @@ uv run python scripts/joint_jog.py --mock
 
 Type `shoulder_pan 1`, then `q`.
 
-Keyboard teleop (WASD / arrows move x and y, Q/E move z, Z/C roll the wrist, space toggles the gripper, Esc quits):
+Keyboard teleop (WASD / arrows move x and y, Q/E move z, Z/C roll the wrist, space toggles the gripper, Esc quits). `--mock` opens Rerun and moves that arm.
 
 ```sh
 uv run python scripts/keyboard_control.py --mock
@@ -125,12 +125,14 @@ uv run python calibration/hand_eye.py
 
 A click is a ray through that pixel. It hits the base-link plane **z = 0**. The arm moves to that point plus `HOVER_M` (0.02 m) along +Z. Depth is not used.
 
+Rerun shows the arm and the camera image together. `--mock` moves the drawn arm. The click itself is on the printed browser page: this Rerun version does not report image clicks back to the script.
+
 ```sh
 uv run python application/click_and_go.py --mock
 uv run python application/click_and_go.py --live
 ```
 
-Open the printed localhost URL and click the image. `--mock` still needs the camera, and it moves only the in-memory arm.
+`--mock` still needs the camera, so the image and the ray are real. Only the arm is simulated.
 
 ## 9. Pick and place
 
@@ -140,6 +142,8 @@ Edit `PICK` and `PLACE` in `application/pick_and_place.py` before you run it liv
 uv run python application/pick_and_place.py --mock
 uv run python application/pick_and_place.py --live
 ```
+
+`--mock` opens Rerun and plays the pick and place on the drawn arm.
 
 ## Config
 
@@ -156,7 +160,7 @@ from so101_control import SO101
 
 with SO101.connect(mock=True) as arm:
     arm.home()
-    arm.set_speed(10)
+    arm.set_speed(60)
     arm.move_to(0.20, 0.00, 0.10)
     print(arm.get_pose())
     arm.grip()

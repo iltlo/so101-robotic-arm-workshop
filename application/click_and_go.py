@@ -3,6 +3,10 @@
 The click is a ray through the pixel. It hits z = 0, then the arm stops
 HOVER_M metres above that point. This does not use the depth camera.
 
+The same image is shown in Rerun next to the arm. This Rerun version cannot
+send a click on that image back to Python, so the click still happens in the
+browser page printed at startup. --mock moves the arm in that Rerun window.
+
     uv run python application/click_and_go.py --mock
     uv run python application/click_and_go.py --live
 """
@@ -14,7 +18,7 @@ from so101_utils.camera import open_camera
 from so101_utils.click_view import ClickView
 from so101_utils.config import arm_parser, load_hand_eye, load_robot
 from so101_utils.transforms import base_link_plane, intersect_pixel
-from so101_utils.twin import Twin
+from so101_utils.twin import watch_arm
 
 # Metres above the base plane. The click itself is the z = 0 intersection.
 HOVER_M = 0.02
@@ -26,16 +30,18 @@ if __name__ == "__main__":
     plane = base_link_plane()
     config = load_robot()
     with SO101.connect(mock=args.mock) as arm, open_camera() as cam:
-        arm.set_speed(10)
-        twin = Twin(config["urdf"])
+        twin = watch_arm(arm, config["urdf"], camera=True)
         view = ClickView(cam.intrinsics.width, cam.intrinsics.height)
         print(view.start())
-        print("Click the image. Ctrl-C stops.")
+        print("The camera is also in Rerun. Click the browser page above; Rerun cannot take the click.")
+        print("Ctrl-C stops.")
         try:
             while True:
                 frame = cam.read()
                 view.publish(frame.rgb_bgr)
                 twin.show(arm)
+                twin.log_camera(frame.rgb_bgr)
+                twin.rr.get_global_data_recording().flush(timeout_sec=0)
                 for x, y in view.consume():
                     try:
                         # Ray from the camera through the pixel, onto z = 0.

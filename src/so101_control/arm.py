@@ -9,7 +9,7 @@ from .backend import MockBackend, OffsetBackend, connect_live
 from .kinematics import JOINTS, Kinematics
 from .motion import MotionError, joint_state, move_joints
 
-MAX_SPEED_DEG_S = 30.0
+MAX_SPEED_DEG_S = 90.0
 
 
 class Pose:
@@ -33,13 +33,14 @@ class SO101:
     `mock=True` keeps an in-memory arm: same IK, no serial.
     """
 
-    def __init__(self, backend, kinematics: Kinematics, limits, *, mock: bool, speed_deg_s: float = 10.0):
+    def __init__(self, backend, kinematics: Kinematics, limits, *, mock: bool, speed_deg_s: float = 60.0):
         self._backend = backend
         self._kin = kinematics
         self._limits = limits
         self.mock = mock
-        self._speed = 10.0
+        self._speed = 60.0
         self._goal = None
+        self._on_motion = None
         self.torque_on = True
         self.set_speed(speed_deg_s)
 
@@ -65,8 +66,13 @@ class SO101:
     def close(self) -> None:
         self._backend.disconnect()
 
+    def track(self, callback) -> None:
+        """Call `callback()` on connect and after every motion step."""
+        self._on_motion = callback
+        callback()
+
     def set_speed(self, deg_per_s: float) -> None:
-        """Joint speed for later moves, in degrees per second (1 to 30)."""
+        """Joint speed for later moves, in degrees per second (1 to 120)."""
         speed = float(deg_per_s)
         if not math.isfinite(speed) or not 1.0 <= speed <= MAX_SPEED_DEG_S:
             raise ValueError(f"Speed must be from 1 to {MAX_SPEED_DEG_S:.0f} deg/s")
@@ -118,7 +124,7 @@ class SO101:
         self._move({name: state[name] + delta})
 
     def home(self) -> None:
-        """Slow move to the calibrated midpoint: every arm joint at 0 degrees."""
+        """Move to the calibrated midpoint: every arm joint at 0 degrees."""
         self._move({name: 0.0 for name in JOINTS})
 
     def grip(self) -> None:
@@ -154,18 +160,20 @@ class SO101:
         self._goal = targets
         move_joints(
             self._backend, targets, self._limits,
-            speed_deg_s=self._speed, period_s=0.01 if self.mock else 0.05,
-            timeout_s=60.0, wait=wait,
+            # Mock waits a little longer between steps so Rerun can draw each pose.
+            speed_deg_s=self._speed, period_s=0.03 if self.mock else 0.02,
+            timeout_s=60.0, wait=wait, on_step=self._on_motion,
         )
 
     def _gripper(self, percent: float) -> None:
-        # Step by 5% so a live relative-target limit does not clip the goal.
-        start = self.get_joints()["gripper"]
-        steps = max(1, math.ceil(abs(percent - start) / 5.0))
-        for index in range(1, steps + 1):
-            goal = start + (percent - start) * index / steps
-            actual = self._backend.send_action({"gripper.pos": goal})
-            if abs(actual.get("gripper.pos", float("nan")) - goal) > 1e-3:
-                raise MotionError("Driver clipped a gripper goal")
-            if index < steps and not self.mock:
-                time.sleep(0.05)
+        """Command the gripper (0 closed, 100 open) and wait until it is close."""
+        self._backend.send_action({"gripper.pos": percent})
+        if self._on_motion is not None:
+            self._on_motion()
+        if self.mock:
+            return
+        deadline = time.monotonic() + 4.0
+        while abs(self.get_joints()["gripper"] - percent) > 8.0:
+            if time.monotonic() > deadline:
+                raise MotionError("Gripper did not settle")
+            time.sleep(0.05)
