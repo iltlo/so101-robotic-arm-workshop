@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "so101-control"
 version = "0.1.0"
-description = "Follower-only SO-101 workshop: safe control, RGB calibration and visualization"
+description = "SO-101 workshop: a small arm API, RGB hand-eye, and click-and-go"
 requires-python = ">=3.12,<3.14"
 dependencies = ["numpy>=2,<2.3", "scipy>=1.14", "PyYAML>=6", "opencv-python>=4.11,<4.14"]
 

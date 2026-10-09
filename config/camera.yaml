@@ -1,0 +1,14 @@
+# RGB camera. width/height/fps are requested from the RealSense.
+# Intrinsics are refreshed by calibration/hand_eye.py. Click-and-go uses the
+# live camera intrinsics while it is open.
+serial: null
+width: 640
+height: 480
+fps: 30
+intrinsics:
+  fx: 603.9661254882812
+  fy: 603.7225341796875
+  cx: 329.75189208984375
+  cy: 248.56214904785156
+  distortion: [0.0, 0.0, 0.0, 0.0, 0.0]
+  distortion_model: inverse_brown_conrady

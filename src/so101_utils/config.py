@@ -1,0 +1,126 @@
+"""Load the three workshop yaml files. Paths in yaml are relative to the repo root."""
+
+import argparse
+from pathlib import Path
+import math
+
+import numpy as np
+import yaml
+
+from so101_control.kinematics import JOINTS
+from so101_utils.transforms import Intrinsics, transform
+
+ROOT = Path(__file__).resolve().parents[2]
+CONFIG = ROOT / "config"
+
+
+def _load(path: Path) -> dict:
+    if not path.is_file():
+        raise FileNotFoundError(f"Missing {path}")
+    data = yaml.safe_load(path.read_text())
+    if not isinstance(data, dict):
+        raise ValueError(f"{path.name} must be a mapping")
+    return data
+
+
+def _resolve(path: str) -> str:
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        candidate = ROOT / candidate
+    return str(candidate.resolve())
+
+
+def load_robot(path: str | Path | None = None) -> dict:
+    """port, arm_id, urdf, joint limits, and station joint offsets."""
+    data = _load(Path(path) if path else CONFIG / "robot.yaml")
+    if "urdf" not in data or "port" not in data:
+        raise ValueError("robot.yaml needs port and urdf")
+    data["urdf"] = _resolve(data["urdf"])
+    data["_path"] = str(Path(path).resolve()) if path else str(CONFIG / "robot.yaml")
+    return data
+
+
+def joint_offsets(config: dict) -> dict[str, float]:
+    """Arm zero corrections in degrees. Missing joints are 0."""
+    values = config.get("joint_offsets_deg") or {}
+    if not isinstance(values, dict) or set(values) - set(JOINTS):
+        raise ValueError("joint_offsets_deg must contain only the five arm joints")
+    offsets = {}
+    for name in JOINTS:
+        value = values.get(name, 0.0)
+        if not isinstance(value, (int, float)) or not math.isfinite(value) or abs(value) > 30:
+            raise ValueError(f"Invalid joint offset for {name} (max ±30°)")
+        offsets[name] = float(value)
+    return offsets
+
+
+def validated_limits(config: dict) -> dict[str, tuple[float, float]]:
+    limits = config.get("joint_limits_deg") or {}
+    if set(limits) != set(JOINTS):
+        raise ValueError(f"joint_limits_deg must list {list(JOINTS)}")
+    result = {}
+    for name in JOINTS:
+        pair = np.asarray(limits[name], dtype=float)
+        if pair.shape != (2,) or not np.isfinite(pair).all() or pair[0] >= pair[1]:
+            raise ValueError(f"Invalid limits for {name}")
+        result[name] = (float(pair[0]), float(pair[1]))
+    return result
+
+
+def load_camera(path: str | Path | None = None) -> dict:
+    data = _load(Path(path) if path else CONFIG / "camera.yaml")
+    intr = data.get("intrinsics") or {}
+    data["intrinsics"] = Intrinsics(
+        int(data.get("width", intr.get("width", 640))),
+        int(data.get("height", intr.get("height", 480))),
+        float(intr["fx"]), float(intr["fy"]), float(intr["cx"]), float(intr["cy"]),
+        tuple(intr.get("distortion") or ()),
+        str(intr.get("distortion_model") or "brown_conrady"),
+    )
+    data["_path"] = str(CONFIG / "camera.yaml")
+    return data
+
+
+def save_camera_intrinsics(intr: Intrinsics, *, serial=None) -> None:
+    """Refresh resolution and intrinsics from the live camera."""
+    path = CONFIG / "camera.yaml"
+    current = _load(path)
+    current["serial"] = serial if serial is not None else current.get("serial")
+    current["width"] = int(intr.width)
+    current["height"] = int(intr.height)
+    current["intrinsics"] = {
+        "fx": float(intr.fx), "fy": float(intr.fy),
+        "cx": float(intr.cx), "cy": float(intr.cy),
+        "distortion": [float(v) for v in intr.distortion],
+        "distortion_model": intr.distortion_model,
+    }
+    path.write_text("# RGB camera. Intrinsics are updated by calibration/hand_eye.py.\n"
+                    + yaml.safe_dump(current, sort_keys=False))
+
+
+def load_hand_eye() -> dict:
+    data = _load(CONFIG / "hand_eye.yaml")
+    if "base_T_camera" not in data:
+        raise ValueError("hand_eye.yaml has no base_T_camera; run calibration/hand_eye.py")
+    data["base_T_camera"] = transform(data["base_T_camera"])
+    return data
+
+
+def save_hand_eye(base_T_camera, *, residual_m: float, residual_deg: float) -> None:
+    payload = {
+        "base_T_camera": np.asarray(base_T_camera, dtype=float).tolist(),
+        "max_residual_m": float(residual_m),
+        "max_residual_deg": float(residual_deg),
+    }
+    text = ("# Fixed camera in the robot base frame. Metres.\n"
+            "# p_base = base_T_camera @ p_camera\n")
+    (CONFIG / "hand_eye.yaml").write_text(text + yaml.safe_dump(payload, sort_keys=False))
+
+
+def arm_parser(description: str) -> argparse.ArgumentParser:
+    """Scripts require either --mock or --live."""
+    parser = argparse.ArgumentParser(description=description)
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--mock", action="store_true", help="run the in-memory arm")
+    group.add_argument("--live", action="store_true", help="connect to the follower")
+    return parser

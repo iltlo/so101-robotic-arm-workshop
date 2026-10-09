@@ -24,8 +24,9 @@ htmlcov/
 
 # Per-station measurements and pinned model downloads (fetched at setup).
 # assets/SO101/
-# config/station.yaml
-# config/calibration.yaml
+# config/robot.yaml
+# config/camera.yaml
+# config/hand_eye.yaml
 
 # VS Code's generated browse database; retain checked-in editor settings.
 .vscode/browse.vc.db*
