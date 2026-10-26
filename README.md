@@ -90,7 +90,7 @@ uv run python scripts/joint_jog.py --mock
 
 Type `shoulder_pan 1`, then `q`.
 
-Keyboard teleop (WASD / arrows move x and y, Q/E move z, Z/C roll the wrist, space toggles the gripper, Esc quits). `--mock` opens Rerun and moves that arm.
+Keyboard teleop (WASD / arrows move x and y, Q/E move z, Z/C roll the wrist, R rests, H homes, space toggles the gripper, Esc quits). `--mock` opens Rerun and moves that arm.
 
 ```sh
 uv run python scripts/keyboard_control.py --mock
@@ -160,6 +160,7 @@ from so101_control import SO101
 
 with SO101.connect(mock=True) as arm:
     arm.home()
+    arm.rest()
     arm.set_speed(60)
     arm.move_to(0.20, 0.00, 0.10)
     print(arm.get_pose())

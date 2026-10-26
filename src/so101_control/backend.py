@@ -1,5 +1,7 @@
 """Live Feetech follower and an in-memory stand-in. Both speak joint degrees."""
 
+import time
+
 from .kinematics import JOINTS
 
 
@@ -54,6 +56,24 @@ class OffsetBackend:
         return getattr(self.robot, name)
 
 
+def release_overload(bus) -> None:
+    """Point every goal at the measured angle so a stalled jaw can drop its fault."""
+    bus.sync_write("Goal_Position", bus.sync_read("Present_Position"))
+    time.sleep(0.1)
+
+
+def connect_follower(follower) -> None:
+    """Connect, and if a jaw is latched in overload, drop that fault and configure again."""
+    try:
+        follower.connect(calibrate=False)
+    except Exception as exc:
+        # configure() turns torque off. A jaw left against its stop rejects that write.
+        if not (follower.bus.is_connected and "Overload" in str(exc)):
+            raise
+        release_overload(follower.bus)
+        follower.configure()
+
+
 def connect_live(config: dict):
     port = config.get("port")
     if not port:
@@ -67,7 +87,7 @@ def connect_live(config: dict):
         port=port, id=arm_id, use_degrees=True, max_relative_target=None,
     ))
     try:
-        follower.connect(calibrate=False)
+        connect_follower(follower)
         if not follower.is_calibrated:
             raise RuntimeError(
                 f"No motor calibration for arm_id={arm_id!r}. Run lerobot-calibrate first "
@@ -76,8 +96,8 @@ def connect_live(config: dict):
     except BaseException:
         if follower.bus.is_connected:
             try:
-                follower.disconnect()
+                follower.bus.disconnect(False)
             except Exception:
-                follower.bus.disconnect(True)
+                pass
         raise
     return follower

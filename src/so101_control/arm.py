@@ -5,11 +5,20 @@ import time
 
 from scipy.spatial.transform import Rotation
 
-from .backend import MockBackend, OffsetBackend, connect_live
+from .backend import MockBackend, OffsetBackend, connect_live, release_overload
 from .kinematics import JOINTS, Kinematics
 from .motion import MotionError, joint_state, move_joints
 
 MAX_SPEED_DEG_S = 90.0
+
+# Folded pose, degrees. The gripper is closed separately (0%).
+REST_JOINTS = {
+    "shoulder_pan": 0.0,
+    "shoulder_lift": -90.0,
+    "elbow_flex": 90.0,
+    "wrist_flex": 45.0,
+    "wrist_roll": 0.0,
+}
 
 
 class Pose:
@@ -64,7 +73,35 @@ class SO101:
         self.close()
 
     def close(self) -> None:
-        self._backend.disconnect()
+        # A jaw driven into its stop latches an overload fault. Goal = measured
+        # position drops that fault so torque-off can finish and the port can close.
+        self._unload_motors()
+        try:
+            self._backend.disconnect()
+        except Exception as exc:
+            bus = getattr(self._backend, "bus", None)
+            if bus is not None and getattr(bus, "is_connected", False):
+                try:
+                    bus.disconnect(False)
+                except Exception:
+                    port = getattr(bus, "port_handler", None)
+                    if port is not None:
+                        try:
+                            port.closePort()
+                        except Exception:
+                            pass
+            print(f"Port closed. Torque-off stopped early: {exc}")
+
+    def _unload_motors(self) -> None:
+        if self.mock:
+            return
+        bus = getattr(self._backend, "bus", None)
+        if bus is None or not getattr(bus, "is_connected", False):
+            return
+        try:
+            release_overload(bus)
+        except Exception:
+            pass
 
     def track(self, callback) -> None:
         """Call `callback()` on connect and after every motion step."""
@@ -93,10 +130,12 @@ class SO101:
         x, y, z = matrix[:3, 3]
         return Pose(x, y, z, roll, pitch, yaw)
 
-    def move_to(self, x: float, y: float, z: float, r: float | None = None, *, wait: bool = True) -> None:
+    def move_to(self, x: float, y: float, z: float, r: float | None = None, *,
+                wait: bool = True, cancel=None) -> bool:
         """Move the TCP to x, y, z metres. `r` is optional wrist_roll in degrees.
 
         The other joints come from position IK. Orientation other than `r` is not tracked.
+        Returns False when `cancel` stops the move before it finishes.
         """
         state = self.get_joints()
         limits = dict(self._limits)
@@ -112,8 +151,7 @@ class SO101:
         targets = self._kin.position_ik(state, (float(x), float(y), float(z)), limits)
         if r is not None:
             targets["wrist_roll"] = float(r)
-        self._goal = targets
-        self._move(targets, wait=wait)
+        return self._move(targets, wait=wait, cancel=cancel)
 
     def move_joint(self, name: str, delta_deg: float) -> None:
         """Step one arm joint. The step must be non-zero and at most 2 degrees."""
@@ -123,9 +161,20 @@ class SO101:
         state = self.get_joints()
         self._move({name: state[name] + delta})
 
-    def home(self) -> None:
+    def home(self, *, wait: bool = True, cancel=None) -> bool:
         """Move to the calibrated midpoint: every arm joint at 0 degrees."""
-        self._move({name: 0.0 for name in JOINTS})
+        return self._move({name: 0.0 for name in JOINTS}, wait=wait, cancel=cancel)
+
+    def rest(self, *, wait: bool = True, cancel=None) -> bool:
+        """Fold the arm and close the gripper.
+
+        shoulder_lift -90°, elbow_flex 90°, wrist_flex 45°, pan and roll at 0°.
+        Returns False when `cancel` stops the arm move before the fold finishes.
+        """
+        arrived = self._move(dict(REST_JOINTS), wait=wait, cancel=cancel)
+        if arrived:
+            self.grip()
+        return arrived
 
     def grip(self) -> None:
         """Close the gripper."""
@@ -156,24 +205,48 @@ class SO101:
         self.torque_on = True
         print("Torque ON at the measured position.")
 
-    def _move(self, targets: dict[str, float], *, wait: bool = True) -> None:
+    def _move(self, targets: dict[str, float], *, wait: bool = True, cancel=None) -> bool:
         self._goal = targets
-        move_joints(
+        done = move_joints(
             self._backend, targets, self._limits,
             # Mock waits a little longer between steps so Rerun can draw each pose.
             speed_deg_s=self._speed, period_s=0.03 if self.mock else 0.02,
-            timeout_s=60.0, wait=wait, on_step=self._on_motion,
+            timeout_s=60.0, wait=wait, on_step=self._on_motion, cancel=cancel,
         )
+        return done is not None
 
     def _gripper(self, percent: float) -> None:
-        """Command the gripper (0 closed, 100 open) and wait until it is close."""
+        """Command the gripper (0 closed, 100 open).
+
+        A jaw that stops short of the goal is on the stop or an object. The goal
+        is rewritten to that position so the servo is not left in an overload fault.
+        """
         self._backend.send_action({"gripper.pos": percent})
         if self._on_motion is not None:
             self._on_motion()
         if self.mock:
             return
-        deadline = time.monotonic() + 4.0
-        while abs(self.get_joints()["gripper"] - percent) > 8.0:
-            if time.monotonic() > deadline:
-                raise MotionError("Gripper did not settle")
+        deadline = time.monotonic() + 2.0
+        started = time.monotonic()
+        previous = None
+        stable_since = started
+        while time.monotonic() < deadline:
+            measured = self.get_joints()["gripper"]
+            if abs(measured - percent) <= 8.0:
+                return
+            now = time.monotonic()
+            if previous is None or abs(measured - previous) >= 0.8:
+                stable_since = now
+            previous = measured
+            if now - started >= 0.25 and now - stable_since >= 0.2:
+                self._hold_gripper(measured)
+                return
             time.sleep(0.05)
+        self._hold_gripper(self.get_joints()["gripper"])
+        raise MotionError("Gripper did not settle")
+
+    def _hold_gripper(self, percent: float) -> None:
+        self._backend.send_action({"gripper.pos": percent})
+        if self._on_motion is not None:
+            self._on_motion()
+        print(f"Gripper holding at {percent:.0f}%.")

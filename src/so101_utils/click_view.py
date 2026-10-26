@@ -16,7 +16,7 @@ main{max-width:960px;margin:auto}img{max-width:100%;height:auto;cursor:crosshair
 border:1px solid #55758c}pre{white-space:pre-wrap;background:#1e303f;padding:18px}</style>
 <main><h1>Click and go</h1>
 <p>Click a point on the table. The arm moves to that spot on the base plane (z = 0),
-stopping 2 cm above it.</p>
+stopping 2 cm above it. A new click takes over from one that is still moving.</p>
 <img id="rgb" alt="Live RGB"><pre id="result">Waiting for camera...</pre></main>
 <script>const image=document.getElementById('rgb'), result=document.getElementById('result');
 let busy=false;
@@ -24,7 +24,9 @@ async function refresh(){if(busy)return;busy=true;
 try{const response=await fetch('/frame',{cache:'no-store'});if(response.ok){
 const blob=await response.blob(),url=URL.createObjectURL(blob),old=image.src;
 image.src=url;if(old.startsWith('blob:'))URL.revokeObjectURL(old);
-}}catch(e){result.textContent='Camera connection unavailable';}finally{busy=false}}
+}const status=await fetch('/status',{cache:'no-store'});
+if(status.ok)result.textContent=(await status.json()).message;
+}catch(e){result.textContent='Camera connection unavailable';}finally{busy=false}}
 setInterval(refresh,180);refresh();
 image.addEventListener('click',async event=>{const rect=image.getBoundingClientRect();
 const x=Math.floor((event.clientX-rect.left)*image.naturalWidth/rect.width);
@@ -39,7 +41,7 @@ class ClickView:
         self.width, self.height = width, height
         self._lock = Lock()
         self._frame = None
-        self._pending = []
+        self._pending = None
         self._message = "Waiting for a click"
         self._server = None
         self._thread = None
@@ -52,9 +54,14 @@ class ClickView:
             self._frame = encoded.tobytes()
 
     def consume(self):
+        """The latest click, or None. Older clicks are dropped."""
         with self._lock:
-            selected, self._pending = self._pending, []
+            selected, self._pending = self._pending, None
         return selected
+
+    def has_pending(self) -> bool:
+        with self._lock:
+            return self._pending is not None
 
     def report(self, message: str) -> None:
         with self._lock:
@@ -86,6 +93,11 @@ class ClickView:
                         self._respond(503, b"Camera warming up", "text/plain")
                     else:
                         self._respond(200, frame, "image/jpeg")
+                elif route == "/status":
+                    with view._lock:
+                        message = view._message
+                    body = json.dumps({"message": message}).encode()
+                    self._respond(200, body, "application/json")
                 else:
                     self._respond(404, b"Not found", "text/plain")
 
@@ -104,13 +116,16 @@ class ClickView:
                     if not (0 <= x < view.width and 0 <= y < view.height):
                         raise ValueError("Pixel outside the image")
                 except (ValueError, TypeError, json.JSONDecodeError) as exc:
-                    self._respond(400, json.dumps({"message": str(exc)}).encode(), "application/json")
+                    text = str(exc)
+                    with view._lock:
+                        view._message = text
+                    self._respond(400, json.dumps({"message": text}).encode(), "application/json")
                     return
                 with view._lock:
-                    view._pending.append((x, y))
-                    message = view._message
-                self._respond(200, json.dumps({"message": f"Queued ({x}, {y}). {message}"}).encode(),
-                              "application/json")
+                    view._pending = (x, y)
+                    view._message = f"Queued ({x}, {y})"
+                    body = json.dumps({"message": view._message}).encode()
+                self._respond(200, body, "application/json")
 
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self._thread = Thread(target=self._server.serve_forever, daemon=True)

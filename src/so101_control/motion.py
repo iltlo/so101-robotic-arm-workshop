@@ -25,7 +25,8 @@ def joint_state(robot) -> dict[str, float]:
 def move_joints(robot, targets: dict[str, float], limits: dict[str, tuple[float, float]],
                 *, speed_deg_s: float = 10.0, period_s: float = 0.05,
                 timeout_s: float = 20.0, tolerance_deg: float = 2.0,
-                wait=True, on_step=None) -> dict[str, float]:
+                wait=True, on_step=None, cancel=None) -> dict[str, float] | None:
+    """Step toward the targets. Returns None when `cancel()` asks to stop."""
     if not targets or not set(targets) <= set(JOINTS):
         raise ValueError("Unknown or empty joint target")
     if speed_deg_s <= 0 or period_s <= 0 or timeout_s <= 0 or tolerance_deg <= 0:
@@ -37,10 +38,16 @@ def move_joints(robot, targets: dict[str, float], limits: dict[str, tuple[float,
         low, high = limits[joint]
         if not low <= start[joint] <= high or not low <= value <= high:
             raise MotionError(f"{joint} outside joint limits")
+
+    def stopped() -> bool:
+        return cancel is not None and cancel()
+
     begun = time.monotonic()
     distance = max(abs(value - start[name]) for name, value in targets.items())
     steps = max(1, math.ceil(distance / (speed_deg_s * period_s)))
     for index in range(1, steps + 1):
+        if stopped():
+            return None
         if time.monotonic() - begun > timeout_s:
             raise MotionError("Motion timed out; no more goals sent")
         desired = {f"{name}.pos": start[name] + (value - start[name]) * index / steps
@@ -58,6 +65,8 @@ def move_joints(robot, targets: dict[str, float], limits: dict[str, tuple[float,
             time.sleep(period_s)
     if wait:
         while True:
+            if stopped():
+                return None
             if time.monotonic() - begun > timeout_s:
                 raise MotionError("Failed to settle before timeout")
             measured = joint_state(robot)
@@ -65,5 +74,7 @@ def move_joints(robot, targets: dict[str, float], limits: dict[str, tuple[float,
                 if on_step is not None:
                     on_step()
                 return measured
+            if on_step is not None:
+                on_step()
             time.sleep(period_s)
     return joint_state(robot)

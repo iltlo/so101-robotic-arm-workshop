@@ -31,6 +31,15 @@ def test_move_grip_and_home():
         target = arm.get_pose()
         arm.home()
         assert arm.get_joints()["elbow_flex"] == pytest.approx(0.0, abs=0.05)
+        arm.set_speed(90)
+        assert arm.rest() is True
+        rested = arm.get_joints()
+        assert rested["shoulder_pan"] == pytest.approx(0.0, abs=0.05)
+        assert rested["shoulder_lift"] == pytest.approx(-90.0, abs=0.05)
+        assert rested["elbow_flex"] == pytest.approx(90.0, abs=0.05)
+        assert rested["wrist_flex"] == pytest.approx(45.0, abs=0.05)
+        assert rested["wrist_roll"] == pytest.approx(0.0, abs=0.05)
+        assert rested["gripper"] == pytest.approx(0.0)
         arm.move_to(target.x, target.y, target.z)
         reached = arm.get_pose()
         assert np.linalg.norm([reached.x - target.x, reached.y - target.y, reached.z - target.z]) < 0.015
