@@ -3,8 +3,10 @@
 import importlib.util
 import json
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+import numpy as np
 import pytest
 
 from so101_control import SO101
@@ -32,8 +34,35 @@ def _get(url):
         return json.load(response)
 
 
+def test_page_stays_blank_until_a_frame_arrives_and_ignores_that_click():
+    with click_view(8, 8) as (view, url):
+        assert _get(url + "status")["message"] == "Waiting for camera..."
+        page = urlopen(url).read().decode()
+        assert "Camera image is not ready" in page
+        try:
+            urlopen(url + "frame")
+            raise AssertionError("frame was served before the camera published")
+        except HTTPError as exc:
+            assert exc.code == 503
+        try:
+            _post(url + "click", {"x": 0, "y": 0})
+            raise AssertionError("click was queued with no image")
+        except HTTPError as exc:
+            assert exc.code == 400
+            assert json.load(exc)["message"] == "Camera image is not ready"
+        assert view.consume() is None
+        view.publish(np.zeros((8, 8, 3), np.uint8))
+        assert _get(url + "status")["message"] == "Waiting for a click"
+        assert urlopen(url + "frame").status == 200
+
+
+def _show(view):
+    view.publish(np.zeros((8, 8, 3), np.uint8))
+
+
 def test_status_updates_after_the_click_returns():
     with click_view(640, 480) as (view, url):
+        _show(view)
         view.report("Moved to 0.282, -0.082, 0.020 m")
         body = _post(url + "click", {"x": 323, "y": 85})
         assert body["message"] == "Queued (323, 85)"
@@ -45,6 +74,7 @@ def test_status_updates_after_the_click_returns():
 
 def test_newer_click_replaces_one_still_waiting():
     with click_view(64, 48) as (view, url):
+        _show(view)
         _post(url + "click", {"x": 1, "y": 2})
         _post(url + "click", {"x": 3, "y": 4})
         assert view.consume() == (3, 4)
@@ -59,6 +89,7 @@ def test_waiting_click_stops_the_move_before_it_runs():
         goal = arm.get_pose()
         arm.home()
         start = arm.get_joints()["elbow_flex"]
+        _show(view)
         _post(url + "click", {"x": 1, "y": 1})
         arrived = module.go_to(arm, view, (goal.x, goal.y, goal.z))
         assert arrived is False

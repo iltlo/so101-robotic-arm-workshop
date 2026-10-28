@@ -16,7 +16,7 @@ Hold a movement key to keep stepping.
     uv run python scripts/keyboard_control.py --mock
     uv run python scripts/keyboard_control.py --live
 
---mock opens Rerun and moves that arm. Esc quits.
+Rerun shows the arm. --mock moves that drawing and does not open the serial port. Esc quits.
 """
 
 from collections import deque
@@ -209,9 +209,8 @@ class Teleop:
 if __name__ == "__main__":
     args = arm_parser(__doc__).parse_args()
     with SO101.connect(mock=args.mock) as arm:
-        if args.mock:
-            watch_arm(arm, load_robot()["urdf"])
-            print("Mock arm is in the Rerun window.")
+        watch_arm(arm, load_robot()["urdf"])
+        print("Arm is in the Rerun window.")
         teleop = Teleop(arm)
         print(teleop.arm.get_pose())
         print("Keyboard control. Esc quits. Keep clear of the arm.")

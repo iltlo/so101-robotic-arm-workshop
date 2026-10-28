@@ -2,9 +2,11 @@
 
 import time
 
+import pytest
+
 from so101_control.backend import MockBackend
 from so101_control.kinematics import JOINTS
-from so101_control.motion import move_joints
+from so101_control.motion import MotionError, move_joints
 
 LIMITS = {name: (-180.0, 180.0) for name in JOINTS}
 
@@ -22,6 +24,29 @@ class _Held:
     def send_action(self, action):
         self.sent += 1
         return dict(action)
+
+
+def test_a_joint_just_past_the_stop_can_still_move_inside():
+    robot = MockBackend()
+    robot.positions["shoulder_lift.pos"] = -108.84
+    limits = dict(LIMITS)
+    limits["shoulder_lift"] = (-108.83, 100.83)
+    done = move_joints(
+        robot, {"shoulder_lift": -108.0}, limits,
+        speed_deg_s=60, period_s=0.01, wait=False,
+    )
+    assert done is not None
+    assert robot.positions["shoulder_lift.pos"] == pytest.approx(-108.0)
+    assert robot.positions["shoulder_lift.pos"] >= -108.83
+
+
+def test_a_joint_far_outside_the_stop_is_refused():
+    robot = MockBackend()
+    robot.positions["shoulder_lift.pos"] = -120.0
+    limits = dict(LIMITS)
+    limits["shoulder_lift"] = (-108.83, 100.83)
+    with pytest.raises(MotionError, match="shoulder_lift at -120.00"):
+        move_joints(robot, {"shoulder_lift": 0.0}, limits, speed_deg_s=60, period_s=0.01, wait=False)
 
 
 def test_cancel_stops_between_steps():

@@ -43,6 +43,22 @@ class RGBRealSense:
 
     def read(self) -> Frame:
         frames = self.pipeline.wait_for_frames(timeout_ms=2000)
+        return self._frame(frames)
+
+    def poll(self) -> Frame | None:
+        """Latest RGB frame, or None. Does not block."""
+        try:
+            ready, frames = self.pipeline.try_wait_for_frames(0)
+        except RuntimeError:
+            return None
+        if not ready:
+            return None
+        image = frames.get_color_frame()
+        if not image:
+            return None
+        return Frame(np.asanyarray(image.get_data()).copy(), time.monotonic())
+
+    def _frame(self, frames) -> Frame:
         image = frames.get_color_frame()
         if not image:
             raise RuntimeError("No RealSense RGB image")

@@ -1,4 +1,4 @@
-"""Open and close the gripper. 0% is closed, 100% is open.
+"""Open and close the gripper. 0% is closed. Opening commands 50%.
 
     uv run python scripts/gripper.py --mock
     uv run python scripts/gripper.py --live

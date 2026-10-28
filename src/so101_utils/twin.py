@@ -31,6 +31,7 @@ class Twin:
             raise ValueError("Follower URDF missing gripper jaw joint")
         self.tick = 0
         self.camera = camera
+        self.ee_x_m = None
         rr.init("so101_control", spawn=spawn and recording is None)
         if recording is not None:
             rr.save(recording)
@@ -41,11 +42,9 @@ class Twin:
         rr.log(robot_root, rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
         rr.log(f"{robot_root}/ee_pose", rr.CoordinateFrame("fk_ee_pose"),
                rr.TransformAxes3D(0.04), static=True)
-        rr.log(f"{robot_root}/hover_goal", rr.CoordinateFrame("hover_goal"), static=True)
-        rr.log(f"{robot_root}/hover_goal", rr.Points3D(
-            [[0, 0, 0]], radii=0.012, colors=[[255, 70, 70]],
-            labels=["target"],
-        ), static=True)
+        # Longer than ee_pose so the goal frame still shows once the arm arrives.
+        rr.log(f"{robot_root}/hover_goal", rr.CoordinateFrame("hover_goal"),
+               rr.TransformAxes3D(0.07), static=True)
 
         colors = ([255, 94, 111], [255, 188, 92], [91, 197, 233],
                   [169, 130, 255], [79, 207, 148])
@@ -79,12 +78,35 @@ class Twin:
         if recording is not None:
             blueprint.save("so101_control", Path(recording).with_suffix(".rbl"))
 
-    def show_hover_goal(self, position) -> None:
-        point = np.asarray(position, dtype=float)
-        if point.shape != (3,) or not np.isfinite(point).all():
-            raise ValueError("Invalid hover goal")
+    def mark_ee_x(self, metres: float) -> None:
+        """Draw the point the pick aims at: this far along the EE X axis.
+
+        It moves with ee_pose. When a pick finishes, this yellow point should
+        sit `ee_x_m` along the goal frame's X axis.
+        """
+        offset = float(metres)
+        if not np.isfinite(offset) or offset == 0.0:
+            raise ValueError("EE X mark must be a non-zero distance")
+        self.ee_x_m = offset
+        root = f"/{self.tree.name}"
+        self.rr.log(f"{root}/ee_tool", self.rr.CoordinateFrame("ee_tool"), static=True)
+        self.rr.log(f"{root}/ee_tool", self.rr.Points3D(
+            [[0.0, 0.0, 0.0]], radii=0.007, colors=[[255, 210, 40]],
+            labels=[f"ee {offset * 1000:+.0f} mm"],
+        ), static=True)
+        self.rr.log(f"{root}/ee_x_line", self.rr.CoordinateFrame("ee_x_line"), static=True)
+        self.rr.log("transforms/ee_x_line", self.rr.Transform3D(
+            translation=[0.0, 0.0, 0.0], parent_frame="base_link", child_frame="ee_x_line",
+        ), static=True)
+
+    def show_goal_pose(self, pose) -> None:
+        """Draw the pose `move_to` solved: gripper_frame_link, not the tool point."""
+        matrix = np.asarray(pose, dtype=float)
+        if matrix.shape != (4, 4) or not np.isfinite(matrix).all():
+            raise ValueError("Invalid goal pose")
         self.rr.log("transforms/hover_goal", self.rr.Transform3D(
-            translation=point, parent_frame="base_link", child_frame="hover_goal"))
+            translation=matrix[:3, 3], mat3x3=matrix[:3, :3],
+            parent_frame="base_link", child_frame="hover_goal"))
 
     def update(self, state: dict[str, float], *, ee_pose=None) -> None:
         self.tick += 1
@@ -117,6 +139,13 @@ class Twin:
                 translation=xyz, mat3x3=pose[:3, :3],
                 parent_frame="base_link", child_frame="fk_ee_pose",
             ))
+            if self.ee_x_m is not None:
+                tip = xyz + pose[:3, :3] @ np.array([self.ee_x_m, 0.0, 0.0])
+                self.rr.log("transforms/ee_tool", self.rr.Transform3D(
+                    translation=tip, parent_frame="base_link", child_frame="ee_tool"))
+                self.rr.log(f"/{self.tree.name}/ee_x_line", self.rr.LineStrips3D(
+                    [np.stack([xyz, tip])], colors=[[255, 210, 40]], radii=0.0015,
+                ))
             for name, value in zip(("x_m", "y_m", "z_m", "roll_deg", "pitch_deg", "yaw_deg"), (*xyz, *rpy)):
                 self.rr.log(f"telemetry/ee/{name}", self.rr.Scalars(float(value)))
 
@@ -143,6 +172,12 @@ def watch_arm(arm, urdf: str | Path, *, camera: bool = False) -> Twin:
         twin.rr.get_global_data_recording().flush(timeout_sec=0)
 
     arm.track(refresh)
+
+    def mark_target(pose) -> None:
+        twin.show_goal_pose(pose)
+        twin.rr.get_global_data_recording().flush(timeout_sec=0)
+
+    arm.on_target(mark_target)
     return twin
 
 

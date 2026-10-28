@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from so101_control import SO101
+from so101_control.arm import DEFAULT_EE_X_M, OPEN_PERCENT
 from so101_control.backend import MockBackend, OffsetBackend
 from so101_control.kinematics import JOINTS
 
@@ -11,12 +12,35 @@ from so101_control.kinematics import JOINTS
 def test_context_manager_and_speed_clamp():
     with SO101.connect(mock=True) as arm:
         assert arm.mock
+        assert arm.ee_x_m == DEFAULT_EE_X_M
+        assert arm._kin.ee_x_m == DEFAULT_EE_X_M
         pose = arm.get_pose()
         assert np.isfinite([pose.x, pose.y, pose.z]).all()
         arm.set_speed(10)
         with pytest.raises(ValueError):
             arm.set_speed(200)
     assert arm._backend.connected is False
+
+
+def test_move_to_reports_its_goal_pose():
+    with SO101.connect(mock=True) as arm:
+        seen = []
+        arm.on_target(seen.append)
+        pose = arm.get_pose()
+        goal_xyz = (pose.x, pose.y, pose.z + 0.01)
+        arm.move_to(*goal_xyz, wait=False)
+        assert len(seen) == 1
+        goal = seen[0]
+        assert goal.shape == (4, 4)
+        assert abs(np.linalg.det(goal[:3, :3]) - 1.0) < 1e-6
+        tool = arm._kin.tool_point(goal)
+        assert np.linalg.norm(tool - goal_xyz) < 0.015
+
+
+def test_connect_can_override_the_tool_offset():
+    with SO101.connect(mock=True, ee_x_m=0.0) as arm:
+        assert arm.ee_x_m == 0.0
+        assert arm._kin.ee_x_m == 0.0
 
 
 def test_move_grip_and_home():
@@ -44,7 +68,7 @@ def test_move_grip_and_home():
         reached = arm.get_pose()
         assert np.linalg.norm([reached.x - target.x, reached.y - target.y, reached.z - target.z]) < 0.015
         arm.release()
-        assert arm.get_joints()["gripper"] == pytest.approx(100.0)
+        assert arm.get_joints()["gripper"] == pytest.approx(OPEN_PERCENT)
         arm.grip()
         assert arm.get_joints()["gripper"] == pytest.approx(0.0)
         arm.move_to(home.x, home.y, home.z, wait=False)

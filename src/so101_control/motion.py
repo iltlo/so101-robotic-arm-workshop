@@ -3,7 +3,7 @@
 import math
 import time
 
-from .kinematics import JOINTS
+from .kinematics import JOINTS, LIMIT_MARGIN_DEG
 
 
 class MotionError(RuntimeError):
@@ -36,8 +36,12 @@ def move_joints(robot, targets: dict[str, float], limits: dict[str, tuple[float,
         if joint not in limits or not math.isfinite(value):
             raise MotionError(f"No limit or invalid target for {joint}")
         low, high = limits[joint]
-        if not low <= start[joint] <= high or not low <= value <= high:
-            raise MotionError(f"{joint} outside joint limits")
+        if not low <= value <= high:
+            raise MotionError(f"{joint} goal {value:.2f}° outside limits [{low:.2f}, {high:.2f}]")
+        if not low - LIMIT_MARGIN_DEG <= start[joint] <= high + LIMIT_MARGIN_DEG:
+            raise MotionError(f"{joint} at {start[joint]:.2f}° outside limits [{low:.2f}, {high:.2f}]")
+        # Plan from inside the stop so the first goal is not clipped.
+        start[joint] = min(max(start[joint], low), high)
 
     def stopped() -> bool:
         return cancel is not None and cancel()

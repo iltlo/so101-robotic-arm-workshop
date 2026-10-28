@@ -10,13 +10,12 @@ import cv2
 
 
 PAGE = """<!doctype html><html lang="en"><meta charset="utf-8">
-<title>SO-101 click and go</title>
+<title>SO-101 __TITLE__</title>
 <style>body{font:16px system-ui;background:#101820;color:#e9f1f6;margin:32px}
 main{max-width:960px;margin:auto}img{max-width:100%;height:auto;cursor:crosshair;
 border:1px solid #55758c}pre{white-space:pre-wrap;background:#1e303f;padding:18px}</style>
-<main><h1>Click and go</h1>
-<p>Click a point on the table. The arm moves to that spot on the base plane (z = 0),
-stopping 2 cm above it. A new click takes over from one that is still moving.</p>
+<main><h1>__TITLE__</h1>
+<p>__TEXT__</p>
 <img id="rgb" alt="Live RGB"><pre id="result">Waiting for camera...</pre></main>
 <script>const image=document.getElementById('rgb'), result=document.getElementById('result');
 let busy=false;
@@ -28,7 +27,9 @@ image.src=url;if(old.startsWith('blob:'))URL.revokeObjectURL(old);
 if(status.ok)result.textContent=(await status.json()).message;
 }catch(e){result.textContent='Camera connection unavailable';}finally{busy=false}}
 setInterval(refresh,180);refresh();
-image.addEventListener('click',async event=>{const rect=image.getBoundingClientRect();
+image.addEventListener('click',async event=>{
+if(!image.naturalWidth||!image.naturalHeight){result.textContent='Camera image is not ready';return;}
+const rect=image.getBoundingClientRect();
 const x=Math.floor((event.clientX-rect.left)*image.naturalWidth/rect.width);
 const y=Math.floor((event.clientY-rect.top)*image.naturalHeight/rect.height);
 try{const response=await fetch('/click',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -36,13 +37,20 @@ body:JSON.stringify({x,y})});result.textContent=(await response.json()).message;
 }catch(e){result.textContent='Could not send click';}});</script></html>"""
 
 
+_DEFAULT_TEXT = (
+    "Click a point on the table. The arm moves to that spot on the base plane (z = 0), "
+    "stopping 2 cm above it. A new click takes over from one that is still moving."
+)
+
+
 class ClickView:
-    def __init__(self, width, height):
+    def __init__(self, width, height, *, title="Click and go", text=None):
         self.width, self.height = width, height
+        self._page = PAGE.replace("__TITLE__", title).replace("__TEXT__", text or _DEFAULT_TEXT).encode()
         self._lock = Lock()
         self._frame = None
         self._pending = None
-        self._message = "Waiting for a click"
+        self._message = "Waiting for camera..."
         self._server = None
         self._thread = None
 
@@ -52,6 +60,8 @@ class ClickView:
             raise RuntimeError("Could not encode the RGB frame")
         with self._lock:
             self._frame = encoded.tobytes()
+            if self._message in ("Waiting for camera...", "Camera image is not ready"):
+                self._message = "Waiting for a click"
 
     def consume(self):
         """The latest click, or None. Older clicks are dropped."""
@@ -85,7 +95,7 @@ class ClickView:
             def do_GET(self):
                 route = urlsplit(self.path).path
                 if route == "/":
-                    self._respond(200, PAGE.encode(), "text/html; charset=utf-8")
+                    self._respond(200, view._page, "text/html; charset=utf-8")
                 elif route == "/frame":
                     with view._lock:
                         frame = view._frame
@@ -122,10 +132,19 @@ class ClickView:
                     self._respond(400, json.dumps({"message": text}).encode(), "application/json")
                     return
                 with view._lock:
-                    view._pending = (x, y)
-                    view._message = f"Queued ({x}, {y})"
-                    body = json.dumps({"message": view._message}).encode()
-                self._respond(200, body, "application/json")
+                    if view._frame is None:
+                        view._message = "Camera image is not ready"
+                        body = json.dumps({"message": view._message}).encode()
+                        ready = False
+                    else:
+                        view._pending = (x, y)
+                        view._message = f"Queued ({x}, {y})"
+                        body = json.dumps({"message": view._message}).encode()
+                        ready = True
+                if ready:
+                    self._respond(200, body, "application/json")
+                else:
+                    self._respond(400, body, "application/json")
 
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self._thread = Thread(target=self._server.serve_forever, daemon=True)

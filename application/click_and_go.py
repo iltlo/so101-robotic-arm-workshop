@@ -75,7 +75,6 @@ if __name__ == "__main__":
                     view.report(str(exc))
                     print(exc)
                     continue
-                twin.show_hover_goal(target)
                 print(f"plane {point}, hover {target}")
                 try:
                     go_to(arm, view, target)

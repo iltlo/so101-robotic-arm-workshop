@@ -11,6 +11,13 @@ from .motion import MotionError, joint_state, move_joints
 
 MAX_SPEED_DEG_S = 90.0
 
+# Metres along gripper_frame_link +X (the red axis). Negative moves the frame
+# origin further along that axis than the point move_to tracks. 15 mm.
+DEFAULT_EE_X_M = -0.025
+
+# Gripper percent. 0 is closed and 100 is fully open. Opening stops halfway.
+OPEN_PERCENT = 50.0
+
 # Folded pose, degrees. The gripper is closed separately (0%).
 REST_JOINTS = {
     "shoulder_pan": 0.0,
@@ -42,7 +49,8 @@ class SO101:
     `mock=True` keeps an in-memory arm: same IK, no serial.
     """
 
-    def __init__(self, backend, kinematics: Kinematics, limits, *, mock: bool, speed_deg_s: float = 60.0):
+    def __init__(self, backend, kinematics: Kinematics, limits, *, mock: bool,
+                 speed_deg_s: float = 60.0, ee_x_m: float = DEFAULT_EE_X_M):
         self._backend = backend
         self._kin = kinematics
         self._limits = limits
@@ -50,21 +58,29 @@ class SO101:
         self._speed = 60.0
         self._goal = None
         self._on_motion = None
+        self._on_target = None
         self.torque_on = True
+        offset = float(ee_x_m)
+        if not math.isfinite(offset):
+            raise ValueError("ee_x_m must be finite")
+        self.ee_x_m = offset
+        if kinematics is not None:
+            kinematics.ee_x_m = offset
         self.set_speed(speed_deg_s)
 
     @classmethod
-    def connect(cls, mock: bool = False, config_path: str | None = None) -> "SO101":
+    def connect(cls, mock: bool = False, config_path: str | None = None, *,
+                ee_x_m: float = DEFAULT_EE_X_M) -> "SO101":
         from so101_utils.config import joint_offsets, load_robot, validated_limits
 
         config = load_robot(config_path)
         limits = validated_limits(config)
-        kinematics = Kinematics(config["urdf"])
+        kinematics = Kinematics(config["urdf"], ee_x_m=ee_x_m)
         if mock:
             backend = MockBackend()
         else:
             backend = OffsetBackend(connect_live(config), joint_offsets(config))
-        return cls(backend, kinematics, limits, mock=mock)
+        return cls(backend, kinematics, limits, mock=mock, ee_x_m=ee_x_m)
 
     def __enter__(self) -> "SO101":
         return self
@@ -108,6 +124,10 @@ class SO101:
         self._on_motion = callback
         callback()
 
+    def on_target(self, callback) -> None:
+        """Call `callback(pose)` with the 4x4 goal pose solved by each `move_to`."""
+        self._on_target = callback
+
     def set_speed(self, deg_per_s: float) -> None:
         """Joint speed for later moves, in degrees per second (1 to 120)."""
         speed = float(deg_per_s)
@@ -116,7 +136,7 @@ class SO101:
         self._speed = speed
 
     def get_joints(self) -> dict[str, float]:
-        """Arm joints in degrees. Gripper is percent: 0 closed, 100 open."""
+        """Arm joints in degrees. Gripper is percent: 0 closed, 100 fully open."""
         return joint_state(self._backend)
 
     def gripper_link_pose(self):
@@ -124,19 +144,27 @@ class SO101:
         return self._kin.fk_gripper_link(self.get_joints())
 
     def get_pose(self) -> Pose:
-        """TCP pose: gripper_frame_link, metres and XYZ Euler degrees."""
+        """Tool pose: metres and XYZ Euler degrees.
+
+        Position is the point `ee_x_m` along gripper_frame_link X, the same point
+        `move_to` drives to the goal. Orientation is that frame. The frame origin
+        drawn in Rerun stays on gripper_frame_link.
+        """
         matrix = self._kin.fk(self.get_joints())
         roll, pitch, yaw = Rotation.from_matrix(matrix[:3, :3]).as_euler("xyz", degrees=True)
-        x, y, z = matrix[:3, 3]
+        x, y, z = self._kin.tool_point(matrix)
         return Pose(x, y, z, roll, pitch, yaw)
 
     def move_to(self, x: float, y: float, z: float, r: float | None = None, *,
-                wait: bool = True, cancel=None) -> bool:
-        """Move the TCP to x, y, z metres. `r` is optional wrist_roll in degrees.
+                wait: bool = True, cancel=None, downward: bool = False) -> bool:
+        """Move the tool point to x, y, z metres. `r` is optional wrist_roll in degrees.
 
-        The other joints come from position IK. Orientation other than `r` is not tracked.
+        The tool point is `ee_x_m` along the EE X axis, set when the arm is created.
+        The other joints come from position IK. Orientation other than `r` is not tracked,
+        unless `downward` points the fingers straight down.
         Returns False when `cancel` stops the move before it finishes.
         """
+        point = (float(x), float(y), float(z))
         state = self.get_joints()
         limits = dict(self._limits)
         if r is not None:
@@ -148,9 +176,11 @@ class SO101:
             state = dict(state)
             state["wrist_roll"] = roll
             limits["wrist_roll"] = (roll - 1e-3, roll + 1e-3)
-        targets = self._kin.position_ik(state, (float(x), float(y), float(z)), limits)
+        targets = self._kin.position_ik(state, point, limits, downward=downward)
         if r is not None:
             targets["wrist_roll"] = float(r)
+        if self._on_target is not None:
+            self._on_target(self._kin.fk(targets))
         return self._move(targets, wait=wait, cancel=cancel)
 
     def move_joint(self, name: str, delta_deg: float) -> None:
@@ -181,8 +211,8 @@ class SO101:
         self._gripper(0.0)
 
     def release(self) -> None:
-        """Open the gripper."""
-        self._gripper(100.0)
+        """Open the gripper to the default stop, halfway."""
+        self._gripper(OPEN_PERCENT)
 
     def wait(self) -> None:
         """Block until the last move is within the settle tolerance."""
@@ -216,7 +246,7 @@ class SO101:
         return done is not None
 
     def _gripper(self, percent: float) -> None:
-        """Command the gripper (0 closed, 100 open).
+        """Command the gripper (0 closed, 100 fully open).
 
         A jaw that stops short of the goal is on the stop or an object. The goal
         is rewritten to that position so the servo is not left in an overload fault.

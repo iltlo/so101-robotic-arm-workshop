@@ -13,6 +13,7 @@ A short path from a fresh checkout to moving the follower. Distances are **metre
 - [x] AprilTag in the camera frame (`calibration/apriltag.py`)
 - [x] Eye-to-hand calibration (`calibration/hand_eye.py`)
 - [x] Click-and-go on the base plane z = 0 (`application/click_and_go.py`)
+- [x] Click and pick: pick at the click, release at rest (`application/click_and_pick.py`)
 - [x] Pick and place (`application/pick_and_place.py`)
 
 Not in this workshop: YOLO, depth picking, and the interactive motor-calibration UI. Motor IDs and ranges come from the official LeRobot calibrator.
@@ -80,7 +81,7 @@ uv run python scripts/gripper.py --mock
 uv run python scripts/gripper.py --live
 ```
 
-`arm_move.py` homes (every arm joint to 0°) and visits three points. Change `POINTS` in that file if you want different ones. Gripper percent is 0 closed and 100 open. `--mock` on these scripts opens Rerun and moves the drawn arm.
+`arm_move.py` homes (every arm joint to 0°) and visits three points. Change `POINTS` in that file if you want different ones. Gripper percent is 0 closed and 100 fully open. The open command is 50. `--mock` on these scripts opens Rerun and moves the drawn arm.
 
 To step a single joint by at most 2°:
 
@@ -90,7 +91,7 @@ uv run python scripts/joint_jog.py --mock
 
 Type `shoulder_pan 1`, then `q`.
 
-Keyboard teleop (WASD / arrows move x and y, Q/E move z, Z/C roll the wrist, R rests, H homes, space toggles the gripper, Esc quits). `--mock` opens Rerun and moves that arm.
+Keyboard teleop (WASD / arrows move x and y, Q/E move z, Z/C roll the wrist, R rests, H homes, space toggles the gripper, Esc quits). Rerun shows the arm. `--mock` moves that drawing and does not open the serial port.
 
 ```sh
 uv run python scripts/keyboard_control.py --mock
@@ -133,6 +134,15 @@ uv run python application/click_and_go.py --live
 ```
 
 `--mock` still needs the camera, so the image and the ray are real. Only the arm is simulated.
+
+## Click and pick
+
+Same click as click-and-go. The arm starts at home with the gripper open. It picks `PICK_HEIGHT_M` above the click (default 0.020 m, 20 mm), closes, folds to the rest pose, and opens. Edit that constant at the top of `application/click_and_pick.py`.
+
+```sh
+uv run python application/click_and_pick.py --mock
+uv run python application/click_and_pick.py --live
+```
 
 ## 9. Pick and place
 
