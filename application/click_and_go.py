@@ -28,7 +28,7 @@ from so101_utils.twin import watch_arm
 
 # Metres above the base plane. The click itself is the z = 0 intersection.
 HOVER_M = 0.02
-# Metres along gripper X. Zero puts the goal on the gripper frame origin.
+# Metres along gripper +Z. Zero puts the goal on the gripper frame origin.
 EE_TOOL_OFFSET_M = 0.0
 
 

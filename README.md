@@ -116,10 +116,17 @@ Each sample is:
 base_T_camera = base_T_gripper @ GRIPPER_T_TAG @ inv(camera_T_tag)
 ```
 
-Press **Enter** at six or more settled poses, then **C**. The result is the average of those samples (mean translation, short-arc SLERP for rotation) and is written to `config/hand_eye.yaml`. **T** turns torque off so you can pose the arm; support it first. **Q** quits without saving.
+Press **Enter** at four or more settled poses, then **C**. The result is the average of those samples (mean translation, short-arc SLERP for rotation) and is written to `config/hand_eye.yaml`. **T** turns torque off so you can pose the arm; support it first. **Q** quits without saving.
 
 ```sh
 uv run python calibration/hand_eye.py
+```
+
+Or drive the arm through the fixed poses in `calibration/poses.md` (recorded side plus the XZ-plane mirror, roll fixed at −170°):
+
+```sh
+uv run python calibration/auto_hand_eye.py --live
+uv run python calibration/auto_hand_eye.py --mock
 ```
 
 ## 8. Click and go
@@ -137,7 +144,7 @@ uv run python application/click_and_go.py --live
 
 ## Click and pick
 
-Same click as click-and-go. The arm starts at the rest pose with the gripper open. The tool point is 25 mm along gripper −X. It picks `PICK_HEIGHT_M` above the click (default 0.00 m), closes, folds to the rest pose, and opens. Edit that constant at the top of `application/click_and_pick.py`.
+Same click as click-and-go. The arm starts at the rest pose with the gripper open. The tool point is 25 mm along gripper +Z. It picks `PICK_HEIGHT_M` above the click (default 0.00 m), closes, folds to the rest pose, and opens. Edit that constant at the top of `application/click_and_pick.py`.
 
 ```sh
 uv run python application/click_and_pick.py --mock

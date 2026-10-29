@@ -2,9 +2,9 @@
 
 The click is a ray through the pixel. It hits z = 0, and the tool point stops
 PICK_HEIGHT_M metres above that point. The tool point is 25 mm along gripper
-−X. The arm first stops APPROACH_M higher, fingers pointing straight down,
-then moves down to the pick. Each pose solves
-that aim on its own. This does not use the depth camera.
++Z. The arm first stops APPROACH_M higher, fingers pointing straight down,
+then moves down to the pick. Each pose solves that aim on its own. This does
+not use the depth camera.
 
 The arm starts at the rest pose with the gripper open. A click moves to the
 pick, holds there, closes the gripper, holds again, folds to the rest pose,
@@ -37,8 +37,8 @@ PICK_HEIGHT_M = 0.00
 APPROACH_M = 0.080
 # Hold the pick before the jaw closes, and hold the grasp before rest.
 DWELL_S = 0.3
-# Metres along gripper X. Negative is opposite the red arrow. 25 mm.
-EE_TOOL_OFFSET_M = -0.025
+# Metres along gripper +Z. Positive follows the blue axis. 25 mm.
+EE_TOOL_OFFSET_M = 0.025
 
 
 def ready(arm, view=None) -> None:

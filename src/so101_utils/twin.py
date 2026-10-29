@@ -5,10 +5,21 @@ from pathlib import Path
 import time
 
 import numpy as np
-from scipy.spatial.transform import Rotation
 
-from so101_control.kinematics import JOINTS
+from so101_control.kinematics import JOINTS, tool_rpy
 from so101_utils.keys import keyboard
+
+
+def _frame_arrows(rr, pose, label, *, length=0.05):
+    """RGB axes at a 4x4 pose in the base frame."""
+    pose = np.asarray(pose, dtype=float)
+    return rr.Arrows3D(
+        origins=np.repeat(pose[:3, 3][None, :], 3, axis=0),
+        vectors=pose[:3, :3].T * length,
+        colors=[[255, 70, 70], [70, 240, 110], [65, 140, 255]],
+        radii=[0.003, 0.003, 0.003],
+        labels=[f"{label} X", f"{label} Y", f"{label} Z"],
+    )
 
 
 class Twin:
@@ -41,11 +52,10 @@ class Twin:
         rr.get_global_data_recording().flush()
         robot_root = f"/{self.tree.name}"
         rr.log(robot_root, rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
-        rr.log(f"{robot_root}/ee_pose", rr.CoordinateFrame("fk_ee_pose"),
-               rr.TransformAxes3D(0.04), static=True)
-        # Longer than ee_pose so the goal frame still shows once the arm arrives.
-        rr.log(f"{robot_root}/hover_goal", rr.CoordinateFrame("hover_goal"),
-               rr.TransformAxes3D(0.07), static=True)
+        # FK / goal geometry is already expressed in base_link metres. Pin those
+        # entities to that frame so the view does not look for a missing TF path.
+        for path in ("fk_ee_axes", "ee_tool", "ee_tool_line", "ee_tool_axes", "hover_goal"):
+            rr.log(f"{robot_root}/{path}", rr.CoordinateFrame("base_link"), static=True)
 
         colors = ([255, 94, 111], [255, 188, 92], [91, 197, 233],
                   [169, 130, 255], [79, 207, 148])
@@ -87,37 +97,27 @@ class Twin:
             blueprint.save("so101_control", Path(recording).with_suffix(".rbl"))
 
     def mark_ee_tool(self, metres: float) -> None:
-        """Draw the tool point: `metres` along gripper X. Negative is opposite the red arrow."""
+        """Draw the tool point each update: `metres` along gripper +Z."""
         offset = float(metres)
         if not np.isfinite(offset) or offset == 0.0:
             raise ValueError("EE tool offset must be a non-zero distance")
         self.ee_tool_offset = offset
-        root = f"/{self.tree.name}"
-        self.rr.log(f"{root}/ee_tool", self.rr.CoordinateFrame("ee_tool"), static=True)
-        self.rr.log(f"{root}/ee_tool", self.rr.Points3D(
-            [[0.0, 0.0, 0.0]], radii=0.007, colors=[[255, 210, 40]],
-            labels=[f"ee {offset * 1000:+.0f} mm"],
-        ), static=True)
-        self.rr.log(f"{root}/ee_tool_line", self.rr.CoordinateFrame("ee_tool_line"), static=True)
-        self.rr.log("transforms/ee_tool_line", self.rr.Transform3D(
-            translation=[0.0, 0.0, 0.0], parent_frame="base_link", child_frame="ee_tool_line",
-        ), static=True)
 
     def show_goal_pose(self, pose) -> None:
         """Draw the tool pose `move_to` solved.
 
-        Rotation is gripper_frame_link. Translation is the tool point, offset
-        along that frame's X axis when `ee_tool_offset` is set.
+        Rotation is gripper_frame_link (X out the fingers). Translation is the
+        tool point, offset along that frame's +Z when `ee_tool_offset` is set.
         """
         matrix = np.asarray(pose, dtype=float)
         if matrix.shape != (4, 4) or not np.isfinite(matrix).all():
             raise ValueError("Invalid goal pose")
-        translation = matrix[:3, 3]
+        drawn = matrix.copy()
         if self.ee_tool_offset:
-            translation = translation + matrix[:3, :3] @ np.array([self.ee_tool_offset, 0.0, 0.0])
-        self.rr.log("transforms/hover_goal", self.rr.Transform3D(
-            translation=translation, mat3x3=matrix[:3, :3],
-            parent_frame="base_link", child_frame="hover_goal"))
+            drawn[:3, 3] = matrix[:3, 3] + matrix[:3, :3] @ np.array(
+                [0.0, 0.0, self.ee_tool_offset])
+        self.rr.log(f"/{self.tree.name}/hover_goal",
+                    _frame_arrows(self.rr, drawn, "goal", length=0.07))
 
     def update(self, state: dict[str, float], *, ee_pose=None) -> None:
         self.tick += 1
@@ -145,18 +145,25 @@ class Twin:
             if pose.shape != (4, 4) or not np.isfinite(pose).all():
                 raise ValueError("Invalid EE FK pose")
             xyz = pose[:3, 3]
-            rpy = Rotation.from_matrix(pose[:3, :3]).as_euler("xyz", degrees=True)
-            self.rr.log("transforms/fk_ee_pose", self.rr.Transform3D(
-                translation=xyz, mat3x3=pose[:3, :3],
-                parent_frame="base_link", child_frame="fk_ee_pose",
-            ))
+            rpy = tool_rpy(pose[:3, :3])
+            # Draw the Placo gripper_frame pose (X out the fingers), not the URDF
+            # link axes alone — those can disagree after a local tool-frame edit.
+            root = f"/{self.tree.name}"
+            self.rr.log(f"{root}/fk_ee_axes", _frame_arrows(self.rr, pose, "fk", length=0.05))
             if self.ee_tool_offset:
-                tip = xyz + pose[:3, :3] @ np.array([self.ee_tool_offset, 0.0, 0.0])
-                self.rr.log("transforms/ee_tool", self.rr.Transform3D(
-                    translation=tip, parent_frame="base_link", child_frame="ee_tool"))
-                self.rr.log(f"/{self.tree.name}/ee_tool_line", self.rr.LineStrips3D(
+                tip = xyz + pose[:3, :3] @ np.array([0.0, 0.0, self.ee_tool_offset])
+                tip_pose = np.eye(4)
+                tip_pose[:3, :3] = pose[:3, :3]
+                tip_pose[:3, 3] = tip
+                self.rr.log(f"{root}/ee_tool", self.rr.Points3D(
+                    [tip], radii=0.007, colors=[[255, 210, 40]],
+                    labels=[f"ee {self.ee_tool_offset * 1000:+.0f} mm"],
+                ))
+                self.rr.log(f"{root}/ee_tool_line", self.rr.LineStrips3D(
                     [np.stack([xyz, tip])], colors=[[255, 210, 40]], radii=0.0015,
                 ))
+                self.rr.log(f"{root}/ee_tool_axes",
+                            _frame_arrows(self.rr, tip_pose, "tool", length=0.04))
             for group, names, values in (
                 ("xyz", ("x_m", "y_m", "z_m"), xyz),
                 ("rpy", ("roll_deg", "pitch_deg", "yaw_deg"), rpy),
@@ -230,22 +237,26 @@ def follow(arm, twin: Twin, *, relax: bool = False) -> None:
 
 
 class HandEyeView:
-    """Twin, the RGB image, and the tag axes while collecting hand-eye samples."""
+    """Twin, the RGB image, and the tag axes while collecting hand-eye samples.
+
+    Eye-to-hand samples use `gripper_link` (tag mount parent), not
+    `gripper_frame_link`. The tool triad at the fingertips is only a check that
+    FK matches the mesh: X out the fingers, +Z the EE offset axis.
+    """
 
     def __init__(self, urdf, intrinsics, gripper_T_tag):
         import rerun as rr
         import rerun.blueprint as rrb
         from pupil_apriltags import Detector
 
-        from so101_utils.tags import _arrows
-
         self.twin = Twin(urdf, spawn=True)
         self.rr = self.twin.rr
         self.intrinsics = intrinsics
         self.gripper_T_tag = np.asarray(gripper_T_tag, dtype=float)
         self.detector = Detector(families="tag36h11")
-        self._arrows = _arrows
         root = f"/{self.twin.tree.name}"
+        for path in ("camera_axes", "tag_axes", "gripper_link_axes"):
+            rr.log(f"{root}/{path}", rr.CoordinateFrame("base_link"), static=True)
         rr.log("camera/rgb", rr.Pinhole(
             focal_length=[intrinsics.fx, intrinsics.fy],
             principal_point=[intrinsics.cx, intrinsics.cy],
@@ -265,8 +276,14 @@ class HandEyeView:
         from so101_utils.tags import draw_tag_overlay, find_tag
 
         state = arm.get_joints()
-        self.twin.update(state, ee_pose=arm._kin.fk(state))
+        tool = arm._kin.fk(state)
+        self.twin.update(state, ee_pose=tool)
         base_T_gripper = arm._kin.gripper_link()
+        root = f"/{self.twin.tree.name}"
+        # Relabel the twin FK triad as "tool" so it is not confused with the tag.
+        self.rr.log(f"{root}/fk_ee_axes", _frame_arrows(self.rr, tool, "tool", length=0.05))
+        self.rr.log(f"{root}/gripper_link_axes",
+                    _frame_arrows(self.rr, base_T_gripper, "link", length=0.035))
         self.rr.log("transforms/tag_mount", self.rr.Transform3D(
             translation=self.gripper_T_tag[:3, 3], mat3x3=self.gripper_T_tag[:3, :3],
             parent_frame="gripper_link", child_frame="tag_mount"))
@@ -287,9 +304,9 @@ class HandEyeView:
             self.rr.log("transforms/station_camera", self.rr.Transform3D(
                 translation=base_T_camera[:3, 3], mat3x3=base_T_camera[:3, :3],
                 parent_frame="base_link", child_frame="station_camera"))
-            self.rr.log(f"/{self.twin.tree.name}/camera_axes",
-                        self._arrows(self.rr, base_T_camera, "camera"))
-        self.rr.log(f"/{self.twin.tree.name}/tag_axes",
-                    self._arrows(self.rr, base_T_gripper @ self.gripper_T_tag, "tag"))
+            self.rr.log(f"{root}/camera_axes",
+                        _frame_arrows(self.rr, base_T_camera, "camera", length=0.05))
+        tag_pose = base_T_gripper @ self.gripper_T_tag
+        self.rr.log(f"{root}/tag_axes", _frame_arrows(self.rr, tag_pose, "tag", length=0.04))
         self.rr.log("camera/rgb", self.rr.Image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB)))
         return camera_T_tag

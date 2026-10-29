@@ -100,7 +100,7 @@ def test_a_click_during_rest_waits_until_rest_is_sent():
 
 def test_ready_folds_to_rest():
     module = _load()
-    assert module.EE_TOOL_OFFSET_M == -0.025
+    assert module.EE_TOOL_OFFSET_M == 0.025
     with SO101.connect(mock=True) as arm:
         arm.move_joint("elbow_flex", -2.0)
         arm.release()
@@ -130,7 +130,7 @@ def test_pick_stops_above_then_comes_straight_down():
 
         def closed():
             pose = arm.get_pose()
-            fingers = arm._kin.fk(arm.get_joints())[:3, 2]
+            fingers = arm._kin.fk(arm.get_joints())[:3, 0]
             seen.append(("grip", pose.x, pose.y, pose.z, fingers[2]))
             grip()
 

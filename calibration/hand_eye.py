@@ -1,6 +1,8 @@
 """Eye-to-hand calibration. Fixed camera, AprilTag on the gripper.
 
 The tag is tag36h11 id 0, 40 mm edge, mounted on gripper_link.
+Samples use gripper_link (not gripper_frame_link / tool XYZRPY). The Rerun
+triads are: tool = fingertips X-out-fingers, link = gripper_link, tag = mount.
 Keys (X11): T torque off/on, Enter record, C average and save, Q quit.
 Support the arm before T turns torque off.
 
@@ -89,4 +91,4 @@ if __name__ == "__main__":
                 # One-pose preview. C averages the whole set.
                 estimate = base_T_gripper @ GRIPPER_T_TAG @ np.linalg.inv(again)
                 saved = False
-                print(f"Captured {len(samples)}. Press C once you have at least 6 varied poses.")
+                print(f"Captured {len(samples)}. Press C once you have at least 4 varied poses.")

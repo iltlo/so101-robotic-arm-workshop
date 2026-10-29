@@ -133,8 +133,8 @@ def solve_eye_to_hand(samples: list[Sample], gripper_T_tag: np.ndarray,
     Each sample is base_T_camera = base_T_gripper @ gripper_T_tag @ inv(camera_T_tag).
     The saved pose is the average of those samples.
     """
-    if len(samples) < 6:
-        raise ValueError("Collect at least 6 diverse settled poses")
+    if len(samples) < 4:
+        raise ValueError("Collect at least 4 diverse settled poses")
     mount = transform(gripper_T_tag)
     checked = [Sample(transform(s.base_T_gripper), transform(s.camera_T_tag)) for s in samples]
     rotations = Rotation.from_matrix([sample.base_T_gripper[:3, :3] for sample in checked])

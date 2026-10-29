@@ -1,11 +1,19 @@
 """Eye-to-hand chain: matrix product, then translation mean and rotation SLERP."""
 
+import importlib.util
+from pathlib import Path
+
 import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation, Slerp
 
 from so101_utils.config import load_hand_eye
 from so101_utils.transforms import Sample, average_transforms, solve_eye_to_hand
+
+_AUTO = Path(__file__).parents[1] / "calibration" / "auto_hand_eye.py"
+_SPEC = importlib.util.spec_from_file_location("auto_hand_eye", _AUTO)
+auto_hand_eye = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(auto_hand_eye)
 
 
 def _pose(rvec, xyz):
@@ -52,11 +60,31 @@ def test_known_mount_recovers_the_camera():
 
 def test_too_few_poses_are_rejected():
     mount = _mount()
-    with pytest.raises(ValueError, match="6"):
-        solve_eye_to_hand([Sample(np.eye(4), np.eye(4))] * 5, mount)
+    with pytest.raises(ValueError, match="4"):
+        solve_eye_to_hand([Sample(np.eye(4), np.eye(4))] * 3, mount)
 
 
 def test_saved_hand_eye_is_a_rigid_transform():
     hand = load_hand_eye()
     assert hand["base_T_camera"].shape == (4, 4)
     assert hand["max_residual_m"] < 0.02
+
+
+def test_auto_poses_mirror_across_base_x_with_roll_fixed():
+    poses = auto_hand_eye.calibration_poses()
+    assert len(poses) == 10
+    recorded, mirrored = poses[:5], poses[5:]
+    for (x, y, z, roll, pitch, yaw), (mx, my, mz, mroll, mpitch, myaw) in zip(recorded, mirrored):
+        assert (mx, my, mz, mroll, mpitch, myaw) == (x, -y, z, roll, pitch, -yaw)
+        assert roll == -170.0
+        assert mroll == -170.0
+
+
+def test_auto_poses_are_reachable_on_the_mock_arm():
+    from so101_control import SO101
+
+    with SO101.connect(mock=True) as arm:
+        for x, y, z, roll, pitch, yaw in auto_hand_eye.calibration_poses():
+            arm.move_to(x, y, z, roll, pitch, yaw)
+            pose = arm.get_pose()
+            assert pose.roll == pytest.approx(-170.0, abs=1.0)

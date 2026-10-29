@@ -22,7 +22,9 @@ def make_archive(*, references=MESHES, omit=(), replacements=None):
     urdf = ("<robot name='so101'>" + "".join(
         f"<link name='{index}'><visual><geometry><mesh filename='{path}'/>"
         "</geometry></visual></link>" for index, path in enumerate(references)
-    ) + "</robot>").encode()
+    ) + "<joint name='gripper_frame_joint' type='fixed'>"
+        "<origin xyz='0 0 0' rpy='0 3.14159 0'/>"
+        "</joint></robot>").encode()
     members = {
         fetch.PREFIX + fetch.SOURCE + fetch.URDF: urdf,
         fetch.PREFIX + "LICENSE": b"Apache-2.0",
@@ -57,6 +59,20 @@ def test_installs_only_urdf_thirteen_meshes_and_license(monkeypatch, tmp_path):
     assert set(snapshot(dest)) == {fetch.URDF, "LICENSE.upstream", *MESHES}
     assert snapshot(dest)["LICENSE.upstream"] == b"Apache-2.0"
     assert fetch._mesh_paths((dest / fetch.URDF).read_bytes()) == set(MESHES)
+    joint = fetch.ET.fromstring(snapshot(dest)[fetch.URDF]).find(
+        "./joint[@name='gripper_frame_joint']/origin")
+    assert joint.get("rpy") == "0 1.5708 0"
+
+
+def test_tool_frame_patch_requires_upstream_z_out_fingers():
+    good = make_archive()
+    with zipfile.ZipFile(io.BytesIO(good)) as archive:
+        urdf = archive.read(fetch.PREFIX + fetch.SOURCE + fetch.URDF)
+    patched = fetch._tool_frame_x_out_fingers(urdf)
+    origin = fetch.ET.fromstring(patched).find("./joint[@name='gripper_frame_joint']/origin")
+    assert origin.get("rpy") == "0 1.5708 0"
+    with pytest.raises(ValueError, match="Unexpected gripper_frame_joint rpy"):
+        fetch._tool_frame_x_out_fingers(patched)
 
 
 def test_success_cleans_only_known_previous_downloads(monkeypatch, tmp_path):
@@ -102,10 +118,13 @@ def test_bad_archives_do_not_change_old_assets(monkeypatch, tmp_path, changes):
 
 def test_actual_managed_urdf_has_thirteen_complete_binary_meshes():
     dest = Path(__file__).parents[1] / "assets" / "SO101"
-    paths = fetch._mesh_paths((dest / fetch.URDF).read_bytes())
+    urdf = (dest / fetch.URDF).read_bytes()
+    paths = fetch._mesh_paths(urdf)
     assert len(paths) == 13
     for name in paths:
         fetch._validate_stl((dest / name).read_bytes(), name)
+    origin = fetch.ET.fromstring(urdf).find("./joint[@name='gripper_frame_joint']/origin")
+    assert origin.get("rpy") == "0 1.5708 0"
 
 
 def test_commit_error_restores_previous_directory(monkeypatch, tmp_path):

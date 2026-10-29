@@ -43,13 +43,18 @@ OLD_DOWNLOADS = OLD_TOP_LEVEL | {
 } | {f"assets/{name}.part" for name in OLD_PARTS}
 
 
-def _mesh_paths(urdf: bytes) -> set[str]:
+def _parse_urdf(urdf: bytes) -> ET.Element:
     try:
         root = ET.fromstring(urdf)
     except ET.ParseError as exc:
         raise ValueError("Invalid pinned URDF XML") from exc
     if root.tag != "robot":
         raise ValueError("Pinned URDF has no robot root")
+    return root
+
+
+def _mesh_paths(urdf: bytes) -> set[str]:
+    root = _parse_urdf(urdf)
     meshes = root.findall(".//mesh")
     paths = set()
     for mesh in meshes:
@@ -63,6 +68,27 @@ def _mesh_paths(urdf: bytes) -> set[str]:
     if len(paths) != 13 or not meshes:
         raise ValueError(f"Expected 13 distinct STL meshes, found {len(paths)}")
     return paths
+
+
+def _tool_frame_x_out_fingers(urdf: bytes) -> bytes:
+    """Upstream gripper_frame has Z out the fingers. Turn it -90 deg about Y.
+
+    The installed frame has X out the fingers so base XYZ Euler pitch +90
+    points them down, matching the workshop tool convention.
+    """
+    root = _parse_urdf(urdf)
+    joint = root.find("./joint[@name='gripper_frame_joint']")
+    if joint is None:
+        raise ValueError("Pinned URDF is missing gripper_frame_joint")
+    origin = joint.find("origin")
+    if origin is None:
+        raise ValueError("gripper_frame_joint has no origin")
+    if origin.get("rpy") != "0 3.14159 0":
+        raise ValueError(
+            f"Unexpected gripper_frame_joint rpy {origin.get('rpy')!r}; "
+            "expected upstream Z-out-fingers '0 3.14159 0'")
+    origin.set("rpy", "0 1.5708 0")
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
 def _validate_stl(data: bytes, name: str) -> None:
@@ -82,8 +108,9 @@ def _archive_files(archive: zipfile.ZipFile) -> dict[str, bytes]:
     license_bytes = _read_unique(archive, license_name)
     if not urdf or not license_bytes:
         raise ValueError("Pinned archive contains an empty URDF or license")
-    files = {URDF: urdf, "LICENSE.upstream": license_bytes}
-    for path in _mesh_paths(urdf):
+    _mesh_paths(urdf)  # validate before rewriting the tool frame
+    files = {URDF: _tool_frame_x_out_fingers(urdf), "LICENSE.upstream": license_bytes}
+    for path in _mesh_paths(files[URDF]):
         data = _read_unique(archive, PREFIX + SOURCE + path)
         _validate_stl(data, path)
         files[path] = data

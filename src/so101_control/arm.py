@@ -2,19 +2,15 @@
 
 import math
 import time
-import warnings
-
-from scipy.spatial.transform import Rotation
 
 from .backend import MockBackend, OffsetBackend, connect_live, release_overload
-from .kinematics import JOINTS, Kinematics
+from .kinematics import JOINTS, Kinematics, tool_rpy
 from .motion import MotionError, joint_state, move_joints
 
 MAX_SPEED_DEG_S = 90.0
 
-# Metres along gripper_frame_link X. Negative puts the tool point on the other
-# side of the red arrow. 20 mm.
-DEFAULT_EE_TOOL_OFFSET_M = -0.020
+# Metres along gripper_frame_link +Z. Positive follows the blue axis. 20 mm.
+DEFAULT_EE_TOOL_OFFSET_M = 0.020
 
 # Gripper percent. 0 is closed and 100 is fully open. Opening stops halfway.
 OPEN_PERCENT = 50.0
@@ -145,19 +141,18 @@ class SO101:
     def get_pose(self) -> Pose:
         """Tool pose: metres and XYZ Euler degrees.
 
-        Position is the point `ee_tool_offset` along gripper_frame_link X, the
-        same point `move_to` drives to the goal. Negative is opposite the red
-        arrow. Orientation is that frame. The frame origin drawn in Rerun stays
-        on gripper_frame_link.
+        Position is the point `ee_tool_offset` along gripper_frame_link +Z, the
+        same point `move_to` drives to the goal. Roll, pitch, and yaw are
+        degrees about the base axes: X forward, Y left, Z up. Pitch +90 points
+        the fingers straight down, and a wrist twist in that pose is a yaw.
+        The frame drawn in Rerun stays on gripper_frame_link.
         """
         return self.pose_at(self.get_joints())
 
     def pose_at(self, joints: dict[str, float]) -> Pose:
         """Tool pose for a joint sample already read from the arm."""
         matrix = self._kin.fk(joints)
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message="Gimbal lock detected")
-            roll, pitch, yaw = Rotation.from_matrix(matrix[:3, :3]).as_euler("xyz", degrees=True)
+        roll, pitch, yaw = tool_rpy(matrix[:3, :3])
         x, y, z = self._kin.tool_point(matrix)
         return Pose(x, y, z, roll, pitch, yaw)
 
@@ -167,10 +162,11 @@ class SO101:
         """Move the tool to a pose in the base frame.
 
         x, y, z are metres of the tool point: `ee_tool_offset` along
-        gripper_frame_link X. roll, pitch, and yaw are XYZ Euler degrees of
-        the same frame, the angles `get_pose` reports. Pass all three or none.
-        None leaves orientation free, unless `downward` points +Z straight down.
-        The twist about that axis stays free.
+        gripper_frame_link +Z. roll, pitch, and yaw are degrees about the base
+        axes, the angles `get_pose` reports. Pitch +90 points the fingers
+        straight down. Pass all three or none.
+        None leaves orientation free, unless `downward` points the fingers
+        (+X) straight down. The twist about that axis stays free.
         Returns False when `cancel` stops the move before it finishes.
         """
         point = (float(x), float(y), float(z))

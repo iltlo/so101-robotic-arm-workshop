@@ -299,8 +299,11 @@
     </inertial>
   </link>
 
+  <!-- X out the fingers, Y left, Z up of the gripper. Upstream used
+       rpy="0 pi 0" (Z out the fingers); this is that frame turned -90 deg
+       about Y so pitch +90 in base XYZ Euler points the fingers down. -->
   <joint name="gripper_frame_joint" type="fixed">
-    <origin xyz="-0.0079 -0.000218121 -0.0981274" rpy="0 3.14159 0"/>
+    <origin xyz="-0.0079 -0.000218121 -0.0981274" rpy="0 1.5708 0"/>
     <parent link="gripper_link"/>
     <child link="gripper_frame_link"/>
     <axis xyz="0 0 0"/>

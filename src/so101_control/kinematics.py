@@ -1,5 +1,7 @@
 """URDF forward kinematics (LeRobot Placo) and pose IK. Joints in degrees, TCP in metres."""
 
+import warnings
+
 import numpy as np
 from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation
@@ -15,6 +17,48 @@ _ORIENTATION_M_PER_RAD = 0.05
 # A short translation is solved inside this many degrees of the start. Outside it,
 # the five-joint arm can spin a wrist through a long path that does not change the tool point.
 NEAR_STEP_DEG = 8.0
+# An orientation goal that does not fit in that window is solved again on the full
+# limits. The window used to keep a pitch that was still a degree off.
+NEAR_ORIENTATION_DEG = 1.0
+
+# Fingers within this many degrees of vertical are pitch ±90. The wrist then
+# spins about base Z, which is yaw. A few degrees of lean still counts: the
+# XYZ chart parks that spin in roll until the fingers are exactly vertical.
+_VERTICAL_DEG = 15.0
+
+
+def _vertical_rpy(rotation: np.ndarray) -> np.ndarray | None:
+    """Base yaw of a straight up or down gripper. None when it is not vertical."""
+    fingers = rotation[:, 0]
+    if float(np.hypot(fingers[0], fingers[1])) > np.sin(np.deg2rad(_VERTICAL_DEG)):
+        return None
+    pitch = 90.0 if fingers[2] < 0.0 else -90.0
+    side = rotation[:, 1]
+    yaw = float(np.rad2deg(np.arctan2(-side[0], side[1])))
+    yaw = (yaw + 180.0) % 360.0 - 180.0
+    return np.array([0.0, pitch, yaw], dtype=float)
+
+
+def tool_rpy(gripper_rotation) -> np.ndarray:
+    """Roll, pitch, and yaw in degrees. XYZ Euler about the base axes.
+
+    gripper_frame_link has X out the fingers. Roll is about base X, pitch about
+    base Y, yaw about base Z. Pitch +90 points the fingers straight down.
+    Within 15° of that pose a wrist twist is a yaw and roll stays 0.
+    """
+    rotation = np.asarray(gripper_rotation, dtype=float)
+    vertical = _vertical_rpy(rotation)
+    if vertical is not None:
+        return vertical
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Gimbal lock detected")
+        roll, pitch, yaw = Rotation.from_matrix(rotation).as_euler("xyz", degrees=True)
+    return np.array([roll, pitch, yaw], dtype=float)
+
+
+def gripper_rotation_from_rpy(rpy) -> np.ndarray:
+    """gripper_frame_link rotation for base-frame XYZ Euler degrees."""
+    return Rotation.from_euler("xyz", np.asarray(rpy, dtype=float), degrees=True).as_matrix()
 
 
 class Kinematics:
@@ -24,8 +68,7 @@ class Kinematics:
         offset = float(ee_tool_offset)
         if not np.isfinite(offset):
             raise ValueError("ee_tool_offset must be finite")
-        # Metres along gripper_frame_link X. Negative is the other side of the
-        # red arrow. 20 mm on −X.
+        # Metres along gripper_frame_link +Z. Positive follows the blue axis.
         self.ee_tool_offset = offset
         self.solver = RobotKinematics(urdf_path=urdf, target_frame_name="gripper_frame_link",
                                       joint_names=list(JOINTS))
@@ -36,9 +79,9 @@ class Kinematics:
             np.array([state[name] for name in JOINTS], dtype=float)))
 
     def tool_point(self, pose: np.ndarray) -> np.ndarray:
-        """Point `ee_tool_offset` along gripper_frame X. Negative is opposite the red arrow."""
+        """Point `ee_tool_offset` along gripper_frame +Z."""
         pose = np.asarray(pose, dtype=float)
-        return pose[:3, 3] + pose[:3, :3] @ np.array([self.ee_tool_offset, 0.0, 0.0])
+        return pose[:3, 3] + pose[:3, :3] @ np.array([0.0, 0.0, self.ee_tool_offset])
 
     def fk_gripper_link(self, state: dict[str, float]) -> np.ndarray:
         """Pose of gripper_link, where the AprilTag is mounted. Not the TCP."""
@@ -54,17 +97,18 @@ class Kinematics:
                     downward: bool = False, rpy=None) -> dict[str, float]:
         """Solve the five arm joints so the tool point reaches target xyz.
 
-        The tool point is `ee_tool_offset` along gripper_frame_link X. Negative
-        sits on the other side of the red arrow. `rpy` is roll, pitch, and yaw
-        in degrees: the XYZ Euler angles of that frame in the base frame, the
-        same angles a pose reports. Orientation is free when `rpy` is omitted.
-        `downward` points +Z straight down and leaves the twist about that axis
-        free. An `rpy` target can be rejected when the orientation is outside
-        `tolerance_deg`.
+        The tool point is `ee_tool_offset` along gripper_frame_link +Z.
+        `rpy` is roll, pitch, and yaw in degrees about the base axes, the same
+        angles a pose reports. Pitch +90 points the fingers straight down.
+        Orientation is free when `rpy` is omitted.
+        `downward` points +X (the fingers) straight down and leaves the twist
+        about that axis free. An `rpy` target can be rejected when the
+        orientation is outside `tolerance_deg`.
 
         The first attempt stays within `NEAR_STEP_DEG` of `state`, so a 5 mm
-        step does not spin a joint. A point outside that window is solved again
-        on the full limits. If that still misses, one more solve starts from
+        step does not spin a joint. A point outside that window, or an
+        orientation that misses by more than `NEAR_ORIENTATION_DEG`, is solved
+        again on the full limits. If that still misses, one more solve starts from
         the home pose. A folded arm can sit in a local minimum that hides a
         point the home pose reaches. The mock arm is created already there.
         """
@@ -78,7 +122,7 @@ class Kinematics:
             angles = np.asarray(rpy, dtype=float)
             if angles.shape != (3,) or not np.isfinite(angles).all():
                 raise ValueError("Invalid RPY target")
-            goal_rotation = Rotation.from_euler("xyz", angles, degrees=True).as_matrix()
+            goal_rotation = gripper_rotation_from_rpy(angles)
         if set(limits) != set(JOINTS):
             raise ValueError("Limits required for all arm joints")
         lower = np.array([limits[name][0] for name in JOINTS], dtype=float)
@@ -98,8 +142,8 @@ class Kinematics:
                 return np.hstack([position, _ORIENTATION_M_PER_RAD * delta])
             if not downward:
                 return position
-            # +Z straight down. Twist about that axis stays free.
-            return np.hstack([position, 0.05 * (pose[:3, 2] - np.array([0.0, 0.0, -1.0]))])
+            # +X (fingers) straight down. Twist about that axis stays free.
+            return np.hstack([position, 0.05 * (pose[:3, 0] - np.array([0.0, 0.0, -1.0]))])
 
         def position_error(angles) -> float:
             return float(np.linalg.norm(self.tool_point(self.fk(dict(zip(JOINTS, angles)))) - goal))
@@ -114,7 +158,7 @@ class Kinematics:
                 return False
             if goal_rotation is not None and orientation_error_deg(angles) > tolerance_deg:
                 return False
-            if downward and self.fk(dict(zip(JOINTS, angles)))[2, 2] >= -0.95:
+            if downward and self.fk(dict(zip(JOINTS, angles)))[2, 0] >= -0.95:
                 return False
             return True
 
@@ -123,7 +167,8 @@ class Kinematics:
         solved = None
         if np.all(near_lower < near_upper):
             near = least_squares(error, initial, bounds=(near_lower, near_upper), max_nfev=100)
-            if near_enough(near.x):
+            orientation_fits = goal_rotation is None or orientation_error_deg(near.x) <= NEAR_ORIENTATION_DEG
+            if orientation_fits and near_enough(near.x):
                 solved = near.x
         if solved is None:
             result = least_squares(error, initial, bounds=(lower, upper), max_nfev=400)
@@ -137,7 +182,7 @@ class Kinematics:
             if position_error(result.x) > tolerance_m:
                 if downward:
                     raise ValueError(
-                        "IK cannot reach that point with the gripper Z axis pointing down")
+                        "IK cannot reach that point with the fingers pointing down")
                 raise ValueError("IK did not reach the point within joint limits")
             if goal_rotation is not None and orientation_error_deg(result.x) > tolerance_deg:
                 raise ValueError("IK did not match the orientation within joint limits")
