@@ -1,32 +1,8 @@
-"""Keyboard events and torque toggle. Callbacks never talk to the motors."""
+"""Keyboard events. Callbacks never talk to the motors."""
 
 from collections import deque
 from contextlib import contextmanager
 from threading import Lock
-
-
-class ArmTorque:
-    """Re-enable torque only after latching the pose the arm is actually in."""
-
-    def __init__(self, robot):
-        self.robot = robot
-        self.enabled = True
-
-    def toggle(self) -> bool:
-        bus = getattr(self.robot, "bus", None)
-        if bus is None:
-            raise RuntimeError("Torque control needs a connected follower")
-        if self.enabled:
-            bus.disable_torque()
-            self.enabled = False
-            print("Torque OFF. Support the arm; it can fall.")
-        else:
-            positions = bus.sync_read("Present_Position")
-            bus.sync_write("Goal_Position", positions)
-            bus.enable_torque()
-            self.enabled = True
-            print("Torque ON at the measured position.")
-        return self.enabled
 
 
 class _Keys:

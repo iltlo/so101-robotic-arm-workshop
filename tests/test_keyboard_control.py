@@ -16,8 +16,9 @@ def _load():
 
 
 class _Pose:
-    def __init__(self, x, y, z):
+    def __init__(self, x, y, z, roll=0.0, pitch=0.0, yaw=0.0):
         self.x, self.y, self.z = x, y, z
+        self.roll, self.pitch, self.yaw = roll, pitch, yaw
 
 
 class _Arm:
@@ -32,11 +33,14 @@ class _Arm:
     def get_pose(self):
         return self.pose
 
-    def get_joints(self):
-        return {"wrist_roll": 0.0}
+    def pose_at(self, joints):
+        return self.pose
 
-    def move_to(self, x, y, z, r=None, wait=True):
-        self.calls.append((x, y, z, r, wait))
+    def get_joints(self):
+        return {"wrist_roll": 0.0, "wrist_flex": 0.0}
+
+    def move_to(self, x, y, z, roll=None, pitch=None, yaw=None, wait=True):
+        self.calls.append((x, y, z, roll, pitch, yaw, wait))
 
     def home(self, *, wait=True, cancel=None):
         self.homes.append((wait, bool(cancel and cancel())))
@@ -59,11 +63,11 @@ def test_wasd_presses_apply_without_waiting_for_settle():
     assert arm.calls == []
     teleop.poll()
     teleop.poll()
-    assert [call[4] for call in arm.calls] == [False, False]
-    assert arm.calls[0][0] == pytest.approx(0.21)
+    assert arm.calls[0][0] == pytest.approx(0.2 + teleop.step)
     assert arm.calls[0][1] == pytest.approx(0.0)
-    assert arm.calls[1][0] == pytest.approx(0.21)
-    assert arm.calls[1][1] == pytest.approx(0.01)
+    assert arm.calls[0][3] is None
+    assert arm.calls[1][0] == pytest.approx(0.2 + teleop.step)
+    assert arm.calls[1][1] == pytest.approx(teleop.step)
     assert arm.pose.x == 0.2
 
 
@@ -74,20 +78,38 @@ def test_held_key_steps_again_from_the_command():
     teleop.on_press(module.keyboard.KeyCode.from_char("w"))
     teleop.poll()
     teleop.poll()
-    assert [call[0] for call in arm.calls] == pytest.approx([0.21, 0.22])
-    assert [call[4] for call in arm.calls] == [False, False]
+    assert [call[0] for call in arm.calls] == pytest.approx(
+        [0.2 + teleop.step, 0.2 + 2 * teleop.step])
 
 
-def test_held_key_does_not_walk_the_goal_away_from_a_stuck_arm():
+def test_held_key_is_not_paused_while_the_arm_catches_up():
     module = _load()
     arm = _Arm()
     teleop = module.Teleop(arm)
     teleop.on_press(module.keyboard.KeyCode.from_char("w"))
-    for _ in range(6):
+    for _ in range(8):
         teleop.poll()
-    assert len(arm.calls) == 5
-    assert arm.calls[-1][0] == pytest.approx(0.25)
-    assert arm.calls[-1][4] is False
+    assert len(arm.calls) == 8
+    assert arm.calls[-1][0] == pytest.approx(0.2 + 8 * teleop.step)
+    assert arm.calls[-1][-1] is False
+
+
+def test_f_and_v_step_wrist_pitch():
+    module = _load()
+    arm = _Arm()
+    teleop = module.Teleop(arm)
+    key = module.keyboard.KeyCode.from_char
+    teleop.on_press(key("f"))
+    teleop.on_release(key("f"))
+    teleop.poll()
+    teleop.on_press(key("v"))
+    teleop.on_release(key("v"))
+    teleop.poll()
+    assert arm.calls[0][4] == pytest.approx(teleop.pitch_step)
+    assert arm.calls[1][4] == pytest.approx(0.0)
+    assert arm.calls[0][3] == pytest.approx(0.0)
+    assert arm.calls[0][5] == pytest.approx(0.0)
+    assert arm.calls[0][0] == pytest.approx(0.2)
 
 
 def test_home_does_not_wait_for_settle():
@@ -98,6 +120,27 @@ def test_home_does_not_wait_for_settle():
     teleop.on_release(module.keyboard.KeyCode.from_char("h"))
     teleop.poll()
     assert arm.homes == [(False, False)]
+
+
+def test_the_viewer_keeps_reading_joints_while_no_key_is_held():
+    module = _load()
+    arm = _Arm()
+    arm.shoulder = 0.0
+    teleop = module.Teleop(arm)
+    draws = []
+
+    def refresh():
+        draws.append(arm.shoulder)
+        arm.shoulder += 15.0
+
+    steps = {"n": 0}
+
+    def alive():
+        steps["n"] += 1
+        return steps["n"] <= 2
+
+    module.run(teleop, alive, refresh)
+    assert draws == [0.0, 15.0]
 
 
 def test_r_goes_to_rest_without_waiting_for_settle():

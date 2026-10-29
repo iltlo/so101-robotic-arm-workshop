@@ -2,9 +2,10 @@
 
 import numpy as np
 import pytest
+from scipy.spatial.transform import Rotation
 
 from so101_control import SO101
-from so101_control.arm import DEFAULT_EE_X_M, OPEN_PERCENT
+from so101_control.arm import DEFAULT_EE_TOOL_OFFSET_M, OPEN_PERCENT
 from so101_control.backend import MockBackend, OffsetBackend
 from so101_control.kinematics import JOINTS
 
@@ -12,8 +13,8 @@ from so101_control.kinematics import JOINTS
 def test_context_manager_and_speed_clamp():
     with SO101.connect(mock=True) as arm:
         assert arm.mock
-        assert arm.ee_x_m == DEFAULT_EE_X_M
-        assert arm._kin.ee_x_m == DEFAULT_EE_X_M
+        assert arm.ee_tool_offset == DEFAULT_EE_TOOL_OFFSET_M
+        assert arm._kin.ee_tool_offset == DEFAULT_EE_TOOL_OFFSET_M
         pose = arm.get_pose()
         assert np.isfinite([pose.x, pose.y, pose.z]).all()
         arm.set_speed(10)
@@ -37,10 +38,46 @@ def test_move_to_reports_its_goal_pose():
         assert np.linalg.norm(tool - goal_xyz) < 0.015
 
 
+def test_move_to_continues_from_the_last_command_when_encoders_lag():
+    with SO101.connect(mock=True) as arm:
+        arm.set_speed(40)
+        pose = arm.get_pose()
+        arm.move_to(pose.x + 0.03, pose.y, pose.z, wait=False)
+        sent = {name: arm._sent[name] for name in JOINTS}
+        for name in JOINTS:
+            arm._backend.positions[f"{name}.pos"] = 0.0
+        packets = []
+        send = arm._backend.send_action
+
+        def spy(action):
+            packets.append(dict(action))
+            return send(action)
+
+        arm._backend.send_action = spy
+        arm.move_to(pose.x + 0.03, pose.y, pose.z, wait=False)
+        name = max(JOINTS, key=lambda joint: abs(sent[joint]))
+        assert abs(sent[name]) > 1.0
+        assert abs(packets[0][f"{name}.pos"] - sent[name]) < abs(sent[name])
+
+
+def test_move_to_changes_pitch_in_the_base_frame():
+    with SO101.connect(mock=True) as arm:
+        pose = arm.get_pose()
+        start = Rotation.from_euler("xyz", [pose.roll, pose.pitch, pose.yaw], degrees=True)
+        goal = Rotation.from_euler("xyz", [pose.roll, pose.pitch + 5.0, pose.yaw], degrees=True)
+        arm.move_to(pose.x, pose.y, pose.z, pose.roll, pose.pitch + 5.0, pose.yaw, wait=False)
+        reached = arm.get_pose()
+        got = Rotation.from_euler("xyz", [reached.roll, reached.pitch, reached.yaw], degrees=True)
+        assert np.rad2deg((goal.inv() * got).magnitude()) < 1.0
+        assert np.rad2deg((start.inv() * got).magnitude()) == pytest.approx(5.0, abs=1.0)
+        assert np.linalg.norm(
+            [reached.x - pose.x, reached.y - pose.y, reached.z - pose.z]) < 0.015
+
+
 def test_connect_can_override_the_tool_offset():
-    with SO101.connect(mock=True, ee_x_m=0.0) as arm:
-        assert arm.ee_x_m == 0.0
-        assert arm._kin.ee_x_m == 0.0
+    with SO101.connect(mock=True, ee_tool_offset=0.0) as arm:
+        assert arm.ee_tool_offset == 0.0
+        assert arm._kin.ee_tool_offset == 0.0
 
 
 def test_move_grip_and_home():

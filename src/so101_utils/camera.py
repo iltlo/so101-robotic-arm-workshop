@@ -69,7 +69,7 @@ class RGBRealSense:
 
 
 @contextmanager
-def camera():
+def open_camera():
     """Open the RealSense described in config/camera.yaml."""
     cfg = load_camera()
     serial = cfg.get("serial") or None
@@ -80,6 +80,3 @@ def camera():
         yield cam
     finally:
         cam.close()
-
-
-open_camera = camera

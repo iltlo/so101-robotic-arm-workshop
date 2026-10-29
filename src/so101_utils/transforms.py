@@ -147,6 +147,5 @@ def solve_eye_to_hand(samples: list[Sample], gripper_T_tag: np.ndarray,
     if max(errs_m) > max_error_m or max(errs_deg) > max_error_deg:
         raise ValueError(f"Calibration inconsistent: max {max(errs_m):.3f} m / {max_error_m:.3f} m, "
                          f"{max(errs_deg):.1f}° / {max_error_deg:.1f}° allowed")
-    return {"base_T_camera": bTc, "gripper_T_tag": mount,
-            "max_residual_m": float(max(errs_m)), "max_residual_deg": float(max(errs_deg)),
-            "sample_count": len(checked)}
+    return {"base_T_camera": bTc,
+            "max_residual_m": float(max(errs_m)), "max_residual_deg": float(max(errs_deg))}

@@ -40,6 +40,25 @@ def test_a_joint_just_past_the_stop_can_still_move_inside():
     assert robot.positions["shoulder_lift.pos"] >= -108.83
 
 
+def test_segments_start_at_the_last_command_not_the_encoders():
+    robot = MockBackend()
+    seen = []
+    send = robot.send_action
+
+    def spy(action):
+        seen.append(action["shoulder_pan.pos"])
+        return send(action)
+
+    robot.send_action = spy
+    robot.positions["shoulder_pan.pos"] = 0.0
+    move_joints(
+        robot, {"shoulder_pan": 10.0}, LIMITS,
+        speed_deg_s=10, period_s=0.05, wait=False, start={"shoulder_pan": 8.0},
+    )
+    assert seen[0] == pytest.approx(8.5)
+    assert seen[-1] == pytest.approx(10.0)
+
+
 def test_a_joint_far_outside_the_stop_is_refused():
     robot = MockBackend()
     robot.positions["shoulder_lift.pos"] = -120.0

@@ -1,6 +1,6 @@
 """Rerun twin of the follower URDF. Driven by joint feedback, not a second model."""
 
-from contextlib import contextmanager
+from contextlib import nullcontext
 from pathlib import Path
 import time
 
@@ -8,6 +8,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from so101_control.kinematics import JOINTS
+from so101_utils.keys import keyboard
 
 
 class Twin:
@@ -31,7 +32,7 @@ class Twin:
             raise ValueError("Follower URDF missing gripper jaw joint")
         self.tick = 0
         self.camera = camera
-        self.ee_x_m = None
+        self.ee_tool_offset = None
         rr.init("so101_control", spawn=spawn and recording is None)
         if recording is not None:
             rr.save(recording)
@@ -50,9 +51,13 @@ class Twin:
                   [169, 130, 255], [79, 207, 148])
         for name, color in zip(JOINTS, colors):
             rr.log(f"telemetry/joints/{name}", rr.SeriesLines(names=name, colors=color), static=True)
-        for name, color in zip(("x_m", "y_m", "z_m", "roll_deg", "pitch_deg", "yaw_deg"),
-                               (*colors, [255, 255, 255])):
-            rr.log(f"telemetry/ee/{name}", rr.SeriesLines(names=name, colors=color), static=True)
+        # Metres and degrees stay on separate plots so the position traces stay visible.
+        for group, names, group_colors in (
+            ("xyz", ("x_m", "y_m", "z_m"), colors[:3]),
+            ("rpy", ("roll_deg", "pitch_deg", "yaw_deg"), (*colors[3:], [255, 255, 255])),
+        ):
+            for name, color in zip(names, group_colors):
+                rr.log(f"telemetry/ee/{group}/{name}", rr.SeriesLines(names=name, colors=color), static=True)
 
         arm_view = rrb.Spatial3DView(
             name="SO-101", origin=robot_root,
@@ -60,7 +65,10 @@ class Twin:
             overrides={f"{robot_root}/collision_geometries": rrb.EntityBehavior(visible=False)},
         )
         joint_plot = rrb.TimeSeriesView(name="Joint angles (degrees)", origin="/telemetry/joints")
-        pose_plot = rrb.TimeSeriesView(name="EE XYZ (m) / RPY (deg)", origin="/telemetry/ee")
+        pose_plots = rrb.Horizontal(
+            rrb.TimeSeriesView(name="EE XYZ (m)", origin="/telemetry/ee/xyz"),
+            rrb.TimeSeriesView(name="EE RPY (deg)", origin="/telemetry/ee/rpy"),
+        )
         if camera:
             # The camera image is shown here. Rerun does not send clicks on that
             # image back to Python, so click-and-go still uses its browser page.
@@ -69,7 +77,7 @@ class Twin:
                 joint_plot,
             )
         else:
-            side = rrb.Vertical(joint_plot, pose_plot)
+            side = rrb.Vertical(joint_plot, pose_plots)
         blueprint = rrb.Blueprint(
             rrb.Horizontal(arm_view, side),
             auto_views=False,
@@ -78,34 +86,37 @@ class Twin:
         if recording is not None:
             blueprint.save("so101_control", Path(recording).with_suffix(".rbl"))
 
-    def mark_ee_x(self, metres: float) -> None:
-        """Draw the point the pick aims at: this far along the EE X axis.
-
-        It moves with ee_pose. When a pick finishes, this yellow point should
-        sit `ee_x_m` along the goal frame's X axis.
-        """
+    def mark_ee_tool(self, metres: float) -> None:
+        """Draw the tool point: `metres` along gripper X. Negative is opposite the red arrow."""
         offset = float(metres)
         if not np.isfinite(offset) or offset == 0.0:
-            raise ValueError("EE X mark must be a non-zero distance")
-        self.ee_x_m = offset
+            raise ValueError("EE tool offset must be a non-zero distance")
+        self.ee_tool_offset = offset
         root = f"/{self.tree.name}"
         self.rr.log(f"{root}/ee_tool", self.rr.CoordinateFrame("ee_tool"), static=True)
         self.rr.log(f"{root}/ee_tool", self.rr.Points3D(
             [[0.0, 0.0, 0.0]], radii=0.007, colors=[[255, 210, 40]],
             labels=[f"ee {offset * 1000:+.0f} mm"],
         ), static=True)
-        self.rr.log(f"{root}/ee_x_line", self.rr.CoordinateFrame("ee_x_line"), static=True)
-        self.rr.log("transforms/ee_x_line", self.rr.Transform3D(
-            translation=[0.0, 0.0, 0.0], parent_frame="base_link", child_frame="ee_x_line",
+        self.rr.log(f"{root}/ee_tool_line", self.rr.CoordinateFrame("ee_tool_line"), static=True)
+        self.rr.log("transforms/ee_tool_line", self.rr.Transform3D(
+            translation=[0.0, 0.0, 0.0], parent_frame="base_link", child_frame="ee_tool_line",
         ), static=True)
 
     def show_goal_pose(self, pose) -> None:
-        """Draw the pose `move_to` solved: gripper_frame_link, not the tool point."""
+        """Draw the tool pose `move_to` solved.
+
+        Rotation is gripper_frame_link. Translation is the tool point, offset
+        along that frame's X axis when `ee_tool_offset` is set.
+        """
         matrix = np.asarray(pose, dtype=float)
         if matrix.shape != (4, 4) or not np.isfinite(matrix).all():
             raise ValueError("Invalid goal pose")
+        translation = matrix[:3, 3]
+        if self.ee_tool_offset:
+            translation = translation + matrix[:3, :3] @ np.array([self.ee_tool_offset, 0.0, 0.0])
         self.rr.log("transforms/hover_goal", self.rr.Transform3D(
-            translation=matrix[:3, 3], mat3x3=matrix[:3, :3],
+            translation=translation, mat3x3=matrix[:3, :3],
             parent_frame="base_link", child_frame="hover_goal"))
 
     def update(self, state: dict[str, float], *, ee_pose=None) -> None:
@@ -139,15 +150,19 @@ class Twin:
                 translation=xyz, mat3x3=pose[:3, :3],
                 parent_frame="base_link", child_frame="fk_ee_pose",
             ))
-            if self.ee_x_m is not None:
-                tip = xyz + pose[:3, :3] @ np.array([self.ee_x_m, 0.0, 0.0])
+            if self.ee_tool_offset:
+                tip = xyz + pose[:3, :3] @ np.array([self.ee_tool_offset, 0.0, 0.0])
                 self.rr.log("transforms/ee_tool", self.rr.Transform3D(
                     translation=tip, parent_frame="base_link", child_frame="ee_tool"))
-                self.rr.log(f"/{self.tree.name}/ee_x_line", self.rr.LineStrips3D(
+                self.rr.log(f"/{self.tree.name}/ee_tool_line", self.rr.LineStrips3D(
                     [np.stack([xyz, tip])], colors=[[255, 210, 40]], radii=0.0015,
                 ))
-            for name, value in zip(("x_m", "y_m", "z_m", "roll_deg", "pitch_deg", "yaw_deg"), (*xyz, *rpy)):
-                self.rr.log(f"telemetry/ee/{name}", self.rr.Scalars(float(value)))
+            for group, names, values in (
+                ("xyz", ("x_m", "y_m", "z_m"), xyz),
+                ("rpy", ("roll_deg", "pitch_deg", "yaw_deg"), rpy),
+            ):
+                for name, value in zip(names, values):
+                    self.rr.log(f"telemetry/ee/{group}/{name}", self.rr.Scalars(float(value)))
 
     def log_camera(self, image_bgr) -> None:
         """Show one RGB frame. `image_bgr` is OpenCV BGR."""
@@ -166,6 +181,7 @@ class Twin:
 def watch_arm(arm, urdf: str | Path, *, camera: bool = False) -> Twin:
     """Open Rerun and redraw the arm after every motion step."""
     twin = Twin(urdf, camera=camera)
+    twin.ee_tool_offset = float(arm.ee_tool_offset)
 
     def refresh() -> None:
         twin.show(arm)
@@ -187,51 +203,9 @@ def play_demo(arm, twin: Twin) -> None:
         raise RuntimeError("Demo poses are for --mock only")
     sequence = ({}, {"shoulder_pan": 25.0}, {"elbow_flex": -20.0}, {"gripper": 100.0}, {"gripper": 0.0})
     for update in sequence:
-        for name, value in update.items():
-            arm._backend.positions[f"{name}.pos"] = float(value)
+        arm._backend.send_action({f"{name}.pos": float(value) for name, value in update.items()})
         twin.show(arm)
     twin.rr.get_global_data_recording().flush()
-
-
-@contextmanager
-def _torque_key(enabled: bool):
-    """Yield a consume() callable. Only the T key is watched."""
-    if not enabled:
-        yield lambda: False
-        return
-    from threading import Lock
-    from pynput import keyboard
-
-    lock = Lock()
-    pending = False
-    held = False
-
-    def on_press(key):
-        nonlocal pending, held
-        if getattr(key, "char", None) and key.char.lower() == "t" and not held:
-            held = True
-            with lock:
-                pending = True
-
-    def on_release(key):
-        nonlocal held
-        if getattr(key, "char", None) and key.char.lower() == "t":
-            held = False
-
-    def consume() -> bool:
-        nonlocal pending
-        with lock:
-            fired, pending = pending, False
-            return fired
-
-    listener = keyboard.Listener(on_press=on_press, on_release=on_release)
-    listener.start()
-    try:
-        if not listener.is_alive():
-            raise RuntimeError("Keyboard listener did not start (an X11 session is required for T)")
-        yield consume
-    finally:
-        listener.stop()
 
 
 def follow(arm, twin: Twin, *, relax: bool = False) -> None:
@@ -239,10 +213,15 @@ def follow(arm, twin: Twin, *, relax: bool = False) -> None:
     print("Live twin. Ctrl-C exits. This does not move the arm.")
     if relax:
         print("T turns torque off. Support the arm; it can fall.")
+    listener = keyboard(("t",)) if relax else nullcontext()
     try:
-        with _torque_key(relax) as pressed:
+        with listener as keys:
             while True:
-                if pressed():
+                pressed = False
+                if keys is not None:
+                    while keys.consume() is not None:
+                        pressed = True
+                if pressed:
                     arm.relax() if arm.torque_on else arm.hold()
                 twin.show(arm)
                 time.sleep(0.1)
@@ -285,8 +264,9 @@ class HandEyeView:
 
         from so101_utils.tags import draw_tag_overlay, find_tag
 
-        self.twin.show(arm)
-        base_T_gripper = arm.gripper_link_pose()
+        state = arm.get_joints()
+        self.twin.update(state, ee_pose=arm._kin.fk(state))
+        base_T_gripper = arm._kin.gripper_link()
         self.rr.log("transforms/tag_mount", self.rr.Transform3D(
             translation=self.gripper_T_tag[:3, 3], mat3x3=self.gripper_T_tag[:3, :3],
             parent_frame="gripper_link", child_frame="tag_mount"))

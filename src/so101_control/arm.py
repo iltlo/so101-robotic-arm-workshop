@@ -2,6 +2,7 @@
 
 import math
 import time
+import warnings
 
 from scipy.spatial.transform import Rotation
 
@@ -11,9 +12,9 @@ from .motion import MotionError, joint_state, move_joints
 
 MAX_SPEED_DEG_S = 90.0
 
-# Metres along gripper_frame_link +X (the red axis). Negative moves the frame
-# origin further along that axis than the point move_to tracks. 15 mm.
-DEFAULT_EE_X_M = -0.025
+# Metres along gripper_frame_link X. Negative puts the tool point on the other
+# side of the red arrow. 20 mm.
+DEFAULT_EE_TOOL_OFFSET_M = -0.020
 
 # Gripper percent. 0 is closed and 100 is fully open. Opening stops halfway.
 OPEN_PERCENT = 50.0
@@ -35,9 +36,6 @@ class Pose:
         self.x, self.y, self.z = float(x), float(y), float(z)
         self.roll, self.pitch, self.yaw = float(roll), float(pitch), float(yaw)
 
-    def __iter__(self):
-        return iter((self.x, self.y, self.z, self.roll, self.pitch, self.yaw))
-
     def __repr__(self) -> str:
         return (f"Pose(x={self.x:.4f} m, y={self.y:.4f} m, z={self.z:.4f} m, "
                 f"roll={self.roll:.1f} deg, pitch={self.pitch:.1f} deg, yaw={self.yaw:.1f} deg)")
@@ -50,37 +48,38 @@ class SO101:
     """
 
     def __init__(self, backend, kinematics: Kinematics, limits, *, mock: bool,
-                 speed_deg_s: float = 60.0, ee_x_m: float = DEFAULT_EE_X_M):
+                 speed_deg_s: float = 90.0, ee_tool_offset: float = DEFAULT_EE_TOOL_OFFSET_M):
         self._backend = backend
         self._kin = kinematics
         self._limits = limits
         self.mock = mock
-        self._speed = 60.0
+        self._speed = 90.0
         self._goal = None
+        self._sent = None
         self._on_motion = None
         self._on_target = None
         self.torque_on = True
-        offset = float(ee_x_m)
+        offset = float(ee_tool_offset)
         if not math.isfinite(offset):
-            raise ValueError("ee_x_m must be finite")
-        self.ee_x_m = offset
+            raise ValueError("ee_tool_offset must be finite")
+        self.ee_tool_offset = offset
         if kinematics is not None:
-            kinematics.ee_x_m = offset
+            kinematics.ee_tool_offset = offset
         self.set_speed(speed_deg_s)
 
     @classmethod
     def connect(cls, mock: bool = False, config_path: str | None = None, *,
-                ee_x_m: float = DEFAULT_EE_X_M) -> "SO101":
+                ee_tool_offset: float = DEFAULT_EE_TOOL_OFFSET_M) -> "SO101":
         from so101_utils.config import joint_offsets, load_robot, validated_limits
 
         config = load_robot(config_path)
         limits = validated_limits(config)
-        kinematics = Kinematics(config["urdf"], ee_x_m=ee_x_m)
+        kinematics = Kinematics(config["urdf"], ee_tool_offset=ee_tool_offset)
         if mock:
             backend = MockBackend()
         else:
             backend = OffsetBackend(connect_live(config), joint_offsets(config))
-        return cls(backend, kinematics, limits, mock=mock, ee_x_m=ee_x_m)
+        return cls(backend, kinematics, limits, mock=mock, ee_tool_offset=ee_tool_offset)
 
     def __enter__(self) -> "SO101":
         return self
@@ -146,39 +145,46 @@ class SO101:
     def get_pose(self) -> Pose:
         """Tool pose: metres and XYZ Euler degrees.
 
-        Position is the point `ee_x_m` along gripper_frame_link X, the same point
-        `move_to` drives to the goal. Orientation is that frame. The frame origin
-        drawn in Rerun stays on gripper_frame_link.
+        Position is the point `ee_tool_offset` along gripper_frame_link X, the
+        same point `move_to` drives to the goal. Negative is opposite the red
+        arrow. Orientation is that frame. The frame origin drawn in Rerun stays
+        on gripper_frame_link.
         """
-        matrix = self._kin.fk(self.get_joints())
-        roll, pitch, yaw = Rotation.from_matrix(matrix[:3, :3]).as_euler("xyz", degrees=True)
+        return self.pose_at(self.get_joints())
+
+    def pose_at(self, joints: dict[str, float]) -> Pose:
+        """Tool pose for a joint sample already read from the arm."""
+        matrix = self._kin.fk(joints)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Gimbal lock detected")
+            roll, pitch, yaw = Rotation.from_matrix(matrix[:3, :3]).as_euler("xyz", degrees=True)
         x, y, z = self._kin.tool_point(matrix)
         return Pose(x, y, z, roll, pitch, yaw)
 
-    def move_to(self, x: float, y: float, z: float, r: float | None = None, *,
+    def move_to(self, x: float, y: float, z: float,
+                roll: float | None = None, pitch: float | None = None, yaw: float | None = None, *,
                 wait: bool = True, cancel=None, downward: bool = False) -> bool:
-        """Move the tool point to x, y, z metres. `r` is optional wrist_roll in degrees.
+        """Move the tool to a pose in the base frame.
 
-        The tool point is `ee_x_m` along the EE X axis, set when the arm is created.
-        The other joints come from position IK. Orientation other than `r` is not tracked,
-        unless `downward` points the fingers straight down.
+        x, y, z are metres of the tool point: `ee_tool_offset` along
+        gripper_frame_link X. roll, pitch, and yaw are XYZ Euler degrees of
+        the same frame, the angles `get_pose` reports. Pass all three or none.
+        None leaves orientation free, unless `downward` points +Z straight down.
+        The twist about that axis stays free.
         Returns False when `cancel` stops the move before it finishes.
         """
         point = (float(x), float(y), float(z))
+        given = (roll, pitch, yaw)
+        if any(value is not None for value in given) and any(value is None for value in given):
+            raise ValueError("roll, pitch, and yaw are one pose")
+        rpy = None if roll is None else (float(roll), float(pitch), float(yaw))
+        # Seed IK from the last command so a small step does not pick a new elbow
+        # while the encoders are still catching up.
         state = self.get_joints()
-        limits = dict(self._limits)
-        if r is not None:
-            low, high = limits["wrist_roll"]
-            roll = float(r)
-            if not math.isfinite(roll) or not low <= roll <= high:
-                raise ValueError("wrist_roll outside joint limits")
-            # Keep this joint at r. A tiny window satisfies the solver's strict bounds.
-            state = dict(state)
-            state["wrist_roll"] = roll
-            limits["wrist_roll"] = (roll - 1e-3, roll + 1e-3)
-        targets = self._kin.position_ik(state, point, limits, downward=downward)
-        if r is not None:
-            targets["wrist_roll"] = float(r)
+        if self._sent and set(JOINTS) <= set(self._sent):
+            state = {name: float(self._sent[name]) for name in JOINTS}
+        targets = self._kin.position_ik(
+            state, point, self._limits, downward=downward, rpy=rpy)
         if self._on_target is not None:
             self._on_target(self._kin.fk(targets))
         return self._move(targets, wait=wait, cancel=cancel)
@@ -188,8 +194,10 @@ class SO101:
         delta = float(delta_deg)
         if name not in JOINTS or not math.isfinite(delta) or delta == 0 or abs(delta) > 2:
             raise ValueError("Use an arm joint and a step of at most 2 degrees")
-        state = self.get_joints()
-        self._move({name: state[name] + delta})
+        base = self.get_joints()[name]
+        if self._sent and name in self._sent:
+            base = float(self._sent[name])
+        self._move({name: base + delta})
 
     def home(self, *, wait: bool = True, cancel=None) -> bool:
         """Move to the calibrated midpoint: every arm joint at 0 degrees."""
@@ -237,12 +245,21 @@ class SO101:
 
     def _move(self, targets: dict[str, float], *, wait: bool = True, cancel=None) -> bool:
         self._goal = targets
+        start = None
+        if self._sent and set(targets) <= set(self._sent):
+            start = {name: float(self._sent[name]) for name in targets}
+        sent: dict[str, float] = {}
         done = move_joints(
             self._backend, targets, self._limits,
             # Mock waits a little longer between steps so Rerun can draw each pose.
             speed_deg_s=self._speed, period_s=0.03 if self.mock else 0.02,
             timeout_s=60.0, wait=wait, on_step=self._on_motion, cancel=cancel,
+            start=start, commanded=sent,
         )
+        if sent:
+            if self._sent is None:
+                self._sent = {}
+            self._sent.update(sent)
         return done is not None
 
     def _gripper(self, percent: float) -> None:

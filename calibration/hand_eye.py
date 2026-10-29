@@ -39,7 +39,6 @@ if __name__ == "__main__":
     with SO101.connect(mock=False) as arm, open_camera() as cam:
         save_camera_intrinsics(cam.intrinsics, serial=None)
         view = HandEyeView(config["urdf"], cam.intrinsics, GRIPPER_T_TAG)
-        torque_on = True
         with keyboard(("t", "enter", "c", "q")) as keys:
             while True:
                 frame = cam.read()
@@ -49,15 +48,13 @@ if __name__ == "__main__":
                     print("Saved." if saved else f"Quit. Discarded {len(samples)} unsaved samples.")
                     break
                 if command == "t":
-                    arm.relax() if torque_on else arm.hold()
-                    torque_on = arm.torque_on
+                    arm.relax() if arm.torque_on else arm.hold()
                     continue
                 if command == "c":
-                    if not torque_on:
+                    if not arm.torque_on:
                         print("Turn torque on before saving.")
                         continue
                     try:
-                        # base_T_camera = base_T_gripper @ GRIPPER_T_TAG @ inv(camera_T_tag)
                         solved = solve_eye_to_hand(samples, GRIPPER_T_TAG)
                     except ValueError as exc:
                         print(exc)
@@ -71,7 +68,7 @@ if __name__ == "__main__":
                     continue
                 if command != "enter":
                     continue
-                if not torque_on:
+                if not arm.torque_on:
                     print("Turn torque on, let the arm settle, then press Enter.")
                     continue
                 if camera_T_tag is None:
@@ -87,8 +84,9 @@ if __name__ == "__main__":
                 if again is None or not _settled(after, arm.get_joints()):
                     print("Tag or arm moved during capture.")
                     continue
-                samples.append(Sample(arm.gripper_link_pose(), again))
+                base_T_gripper = arm.gripper_link_pose()
+                samples.append(Sample(base_T_gripper, again))
                 # One-pose preview. C averages the whole set.
-                estimate = (arm.gripper_link_pose() @ GRIPPER_T_TAG @ np.linalg.inv(again))
+                estimate = base_T_gripper @ GRIPPER_T_TAG @ np.linalg.inv(again)
                 saved = False
                 print(f"Captured {len(samples)}. Press C once you have at least 6 varied poses.")

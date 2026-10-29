@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from so101_control import SO101
+from so101_control.arm import REST_JOINTS
 from so101_utils.click_view import click_view
 
 _SCRIPT = Path(__file__).resolve().parents[1] / "application" / "click_and_go.py"
@@ -80,6 +81,22 @@ def test_newer_click_replaces_one_still_waiting():
         assert view.consume() == (3, 4)
         assert view.has_pending() is False
         assert view.consume() is None
+
+
+def test_ready_folds_to_rest_and_a_click_waits():
+    module = _load()
+    assert module.EE_TOOL_OFFSET_M == 0.0
+    with SO101.connect(mock=True, ee_tool_offset=module.EE_TOOL_OFFSET_M) as arm, click_view(8, 8) as (view, url):
+        arm.move_joint("elbow_flex", -2.0)
+        arm.release()
+        _show(view)
+        _post(url + "click", {"x": 1, "y": 1})
+        module.ready(arm, view)
+        joints = arm.get_joints()
+        for name, angle in REST_JOINTS.items():
+            assert joints[name] == pytest.approx(angle, abs=0.05)
+        assert joints["gripper"] == pytest.approx(0.0)
+        assert view.consume() == (1, 1)
 
 
 def test_waiting_click_stops_the_move_before_it_runs():

@@ -18,8 +18,8 @@ CLEARANCE = 0.06
 
 
 def jump(arm, x, y, z) -> None:
-    arm.move_to(x, y, z + CLEARANCE)
-    arm.move_to(x, y, z)
+    arm.move_to(x, y, z + CLEARANCE, downward=True)
+    arm.move_to(x, y, z, downward=True)
 
 
 if __name__ == "__main__":
@@ -34,7 +34,7 @@ if __name__ == "__main__":
         print(f"Pick {PICK}")
         jump(arm, *PICK)
         arm.grip()
-        arm.move_to(PICK[0], PICK[1], PICK[2] + CLEARANCE)
+        arm.move_to(PICK[0], PICK[1], PICK[2] + CLEARANCE, downward=True)
         print(f"Place {PLACE}")
         jump(arm, *PLACE)
         arm.release()

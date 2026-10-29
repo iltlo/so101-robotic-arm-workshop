@@ -5,11 +5,6 @@ import numpy as np
 from so101_utils.transforms import Intrinsics, normalized_ray, transform
 
 
-def gripper_link_pose(arm) -> np.ndarray:
-    """4x4 pose of the tag's mount link (gripper_link), in the base frame."""
-    return arm._kin.fk_gripper_link(arm.get_joints())
-
-
 def draw_tag_overlay(image_bgr, corners, tag_id: int) -> None:
     import cv2
 
@@ -90,7 +85,7 @@ def _arrows(rr, pose, label, *, length=0.05):
     )
 
 
-class TagPoseView:
+class TagView:
     """Rerun view of one tag in the camera frame. The arm is not involved."""
 
     def __init__(self, intrinsics: Intrinsics, *, tag_id=0, tag_size_m=0.04, spawn=True):
@@ -148,6 +143,3 @@ class TagPoseView:
             result = camera_T_tag
         self.rr.log("camera/rgb", self.rr.Image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB)))
         return result
-
-
-TagView = TagPoseView

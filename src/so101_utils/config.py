@@ -36,7 +36,6 @@ def load_robot(path: str | Path | None = None) -> dict:
     if "urdf" not in data or "port" not in data:
         raise ValueError("robot.yaml needs port and urdf")
     data["urdf"] = _resolve(data["urdf"])
-    data["_path"] = str(Path(path).resolve()) if path else str(CONFIG / "robot.yaml")
     return data
 
 
@@ -77,7 +76,6 @@ def load_camera(path: str | Path | None = None) -> dict:
         tuple(intr.get("distortion") or ()),
         str(intr.get("distortion_model") or "brown_conrady"),
     )
-    data["_path"] = str(CONFIG / "camera.yaml")
     return data
 
 

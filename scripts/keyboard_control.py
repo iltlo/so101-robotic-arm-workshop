@@ -1,8 +1,9 @@
-"""Cartesian keyboard control. Steps are metres; wrist roll is degrees.
+"""Cartesian keyboard control. Steps are metres. Roll, pitch, and yaw are base-frame degrees.
 
     WASD or arrows : x / y
-    Q / E          : z up / down
-    Z / C          : wrist roll
+    Q / E          : z down / up
+    Z / C          : roll
+    F / V          : pitch
     H              : home
     R              : rest
     P              : print pose
@@ -11,12 +12,14 @@
     Esc            : quit
 
 Each press steps immediately. The next key does not wait for the arm to settle.
-Hold a movement key to keep stepping.
+Hold a movement key to keep stepping. WASD and Q/E move the tool point and
+leave orientation free. Z/C and F/V send the base-frame roll, pitch, and yaw.
 
     uv run python scripts/keyboard_control.py --mock
     uv run python scripts/keyboard_control.py --live
 
-Rerun shows the arm. --mock moves that drawing and does not open the serial port. Esc quits.
+Rerun follows the measured joints, including while a move is still catching up.
+--mock moves that drawing and does not open the serial port. Esc quits.
 """
 
 from collections import deque
@@ -29,17 +32,20 @@ from so101_control import SO101
 from so101_utils.config import arm_parser, load_robot
 from so101_utils.twin import watch_arm
 
-_MOVES = {"w", "a", "s", "d", "q", "e", "z", "c"}
+_MOVES = {"w", "a", "s", "d", "q", "e", "z", "c", "f", "v"}
+# Same as the arm default. An 8° step at this speed holds the next key for about 0.09 s.
+TELEOP_SPEED_DEG_S = 90.0
 
 
 class Teleop:
     def __init__(self, arm: SO101):
         self.arm = arm
-        self.step = 0.01  # metres
-        self.roll_step = 5.0  # degrees
+        self.step = 0.005  # metres
+        self.roll_step = 5.0  # degrees, base roll
+        self.pitch_step = 5.0  # degrees, base pitch
         self.closed = False
         self.running = True
-        self._command = None  # xyz metres and wrist_roll degrees
+        self._command = None  # xyz metres; roll, pitch, yaw only while those keys are used
         self._notice = None
         self._lock = Lock()
         self._held: set[str] = set()
@@ -95,14 +101,14 @@ class Teleop:
                 with self._lock:
                     self._queue.appendleft(token)
             return
-        dx, dy, dz, dr = self._delta(held)
-        if dx == dy == dz == dr == 0.0:
+        dx, dy, dz, dr, dp = self._delta(held)
+        if dx == dy == dz == dr == dp == 0.0:
             time.sleep(0.02)
             return
-        self._nudge(dx, dy, dz, dr)
+        self._nudge(dx, dy, dz, dr, dp)
 
     def _delta(self, tokens):
-        dx = dy = dz = dr = 0.0
+        dx = dy = dz = dr = dp = 0.0
         for token in tokens:
             if token == "w":
                 dx += self.step
@@ -113,14 +119,18 @@ class Teleop:
             elif token == "d":
                 dy -= self.step
             elif token == "q":
-                dz += self.step
-            elif token == "e":
                 dz -= self.step
+            elif token == "e":
+                dz += self.step
             elif token == "z":
                 dr += self.roll_step
             elif token == "c":
                 dr -= self.roll_step
-        return dx, dy, dz, dr
+            elif token == "f":
+                dp += self.pitch_step
+            elif token == "v":
+                dp -= self.pitch_step
+        return dx, dy, dz, dr, dp
 
     def _apply(self, token: str) -> bool:
         if token in _MOVES:
@@ -172,32 +182,38 @@ class Teleop:
             return True
         return True
 
-    def _nudge(self, dx=0.0, dy=0.0, dz=0.0, dr=0.0) -> bool:
-        measured = self.arm.get_pose()
-        measured_roll = self.arm.get_joints()["wrist_roll"]
-        base = self._command
-        if base is None:
-            base = (measured.x, measured.y, measured.z, measured_roll)
+    def _nudge(self, dx=0.0, dy=0.0, dz=0.0, dr=0.0, dp=0.0) -> bool:
+        if self._command is None:
+            measured = self.arm.pose_at(self.arm.get_joints())
+            base = (measured.x, measured.y, measured.z, None, None, None)
+        else:
+            base = self._command
         x, y, z = base[0] + dx, base[1] + dy, base[2] + dz
-        roll = base[3] + dr
-        # The goal stays near the measured hand. Otherwise a held key walks
-        # the target away while the arm is still catching up.
-        ahead = max(abs(x - measured.x), abs(y - measured.y), abs(z - measured.z))
-        if ahead > self.step * 5 + 1e-6 or abs(roll - measured_roll) > self.roll_step * 5 + 1e-6:
-            self._say("Waiting for the arm to catch up.")
-            time.sleep(0.05)
-            return False
+        # A pure translation must not pin orientation. This arm has five joints,
+        # so holding roll, pitch, and yaw stops the tool point short of the goal.
+        roll = pitch = yaw = None
+        if dr != 0.0 or dp != 0.0:
+            if base[3] is None:
+                measured = self.arm.pose_at(self.arm.get_joints())
+                base = (x, y, z, measured.roll, measured.pitch, measured.yaw)
+            roll = base[3] + dr
+            pitch = base[4] + dp
+            yaw = base[5]
         try:
             # Do not wait for the 2° settle band. A live joint often stops
             # short of it, and that wait used to block every later key.
-            self.arm.move_to(x, y, z, r=roll, wait=False)
+            self.arm.move_to(x, y, z, roll, pitch, yaw, wait=False)
         except (ValueError, RuntimeError) as exc:
             self._say(str(exc))
             time.sleep(0.05)
             return True
-        self._command = (x, y, z, roll)
+        self._command = (x, y, z, roll, pitch, yaw)
         self._notice = None
-        print(f"Goal x={x:.4f} m, y={y:.4f} m, z={z:.4f} m, wrist_roll={roll:.1f} deg")
+        if roll is None:
+            print(f"Goal x={x:.4f} m, y={y:.4f} m, z={z:.4f} m")
+        else:
+            print(f"Goal x={x:.4f} m, y={y:.4f} m, z={z:.4f} m, "
+                  f"roll={roll:.1f} deg, pitch={pitch:.1f} deg, yaw={yaw:.1f} deg")
         return True
 
     def _say(self, message: str) -> None:
@@ -206,19 +222,32 @@ class Teleop:
             self._notice = message
 
 
+def run(teleop: Teleop, listener_alive, refresh) -> None:
+    """Apply keys, and keep drawing the joints the arm is actually at."""
+    while teleop.running and listener_alive():
+        teleop.poll()
+        refresh()
+
+
 if __name__ == "__main__":
     args = arm_parser(__doc__).parse_args()
     with SO101.connect(mock=args.mock) as arm:
-        watch_arm(arm, load_robot()["urdf"])
+        arm.set_speed(TELEOP_SPEED_DEG_S)
+        twin = watch_arm(arm, load_robot()["urdf"])
         print("Arm is in the Rerun window.")
         teleop = Teleop(arm)
+        print(f"Step {teleop.step * 1000:.0f} mm, joint speed {TELEOP_SPEED_DEG_S:.0f} deg/s.")
         print(teleop.arm.get_pose())
         print("Keyboard control. Esc quits. Keep clear of the arm.")
+
+        def refresh() -> None:
+            twin.show(arm)
+            twin.rr.get_global_data_recording().flush(timeout_sec=0)
+
         with keyboard.Listener(on_press=teleop.on_press, on_release=teleop.on_release) as listener:
             if not listener.is_alive():
                 raise RuntimeError("Keyboard listener did not start. An X11 session is required.")
             try:
-                while teleop.running and listener.is_alive():
-                    teleop.poll()
+                run(teleop, listener.is_alive, refresh)
             except KeyboardInterrupt:
                 print("Stopped.")
