@@ -3,7 +3,20 @@
 import math
 import time
 
-from .kinematics import JOINTS, LIMIT_MARGIN_DEG
+from so101_utils.model import JOINTS
+
+from .kinematics import LIMIT_MARGIN_DEG
+
+DEFAULT_SPEED_DEG_S = 10.0
+DEFAULT_PERIOD_S = 0.05
+DEFAULT_TIMEOUT_S = 20.0
+DEFAULT_TOLERANCE_DEG = 2.0
+
+# Feedback further than this from the trajectory means the bus is out of step.
+FEEDBACK_LAG_DEG = 8.0
+FEEDBACK_LAG_SPEED_FACTOR = 2.0
+# A driver that rounds a goal by less than this is not a trajectory failure.
+GOAL_EPSILON_DEG = 1e-3
 
 
 class MotionError(RuntimeError):
@@ -23,8 +36,8 @@ def joint_state(robot) -> dict[str, float]:
 
 
 def move_joints(robot, targets: dict[str, float], limits: dict[str, tuple[float, float]],
-                *, speed_deg_s: float = 10.0, period_s: float = 0.05,
-                timeout_s: float = 20.0, tolerance_deg: float = 2.0,
+                *, speed_deg_s: float = DEFAULT_SPEED_DEG_S, period_s: float = DEFAULT_PERIOD_S,
+                timeout_s: float = DEFAULT_TIMEOUT_S, tolerance_deg: float = DEFAULT_TOLERANCE_DEG,
                 wait=True, on_step=None, cancel=None,
                 start: dict[str, float] | None = None,
                 commanded: dict[str, float] | None = None) -> dict[str, float] | None:
@@ -70,11 +83,13 @@ def move_joints(robot, targets: dict[str, float], limits: dict[str, tuple[float,
                  for name, value in targets.items()}
         desired = {f"{name}.pos": angle for name, angle in point.items()}
         measured = joint_state(robot)
-        if any(abs(measured[name] - desired[f"{name}.pos"]) > max(8.0, speed_deg_s * 2)
+        if any(abs(measured[name] - desired[f"{name}.pos"])
+               > max(FEEDBACK_LAG_DEG, speed_deg_s * FEEDBACK_LAG_SPEED_FACTOR)
                for name in targets):
             raise MotionError("Feedback differs from the trajectory; no more goals sent")
         actual = robot.send_action(desired)
-        if any(abs(actual.get(key, float("nan")) - goal) > 1e-3 for key, goal in desired.items()):
+        if any(abs(actual.get(key, float("nan")) - goal) > GOAL_EPSILON_DEG
+               for key, goal in desired.items()):
             raise MotionError("Driver clipped a goal; no more goals sent")
         if commanded is not None:
             commanded.update(point)

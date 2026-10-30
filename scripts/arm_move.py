@@ -8,14 +8,15 @@ import time
 
 from so101_control import SO101
 from so101_utils.config import arm_parser, load_robot
-from so101_utils.twin import watch_arm
+from so101_utils.views import watch_arm
 
-# A short triangle in front of the home pose. Edit these if your table differs.
+# A short triangle in front of the home pose.
 POINTS = (
     (0.20, 0.00, 0.10),
     (0.22, 0.06, 0.10),
     (0.22, -0.06, 0.10),
 )
+VIEW_PAUSE_S = 0.5
 
 
 if __name__ == "__main__":
@@ -30,4 +31,4 @@ if __name__ == "__main__":
             print(f"Moving to {point}")
             arm.move_to(*point)
             print(arm.get_pose())
-            time.sleep(0.5)
+            time.sleep(VIEW_PAUSE_S)

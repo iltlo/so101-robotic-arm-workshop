@@ -5,8 +5,8 @@ import time
 import pytest
 
 from so101_control.backend import MockBackend
-from so101_control.kinematics import JOINTS
 from so101_control.motion import MotionError, move_joints
+from so101_utils.model import JOINTS
 
 LIMITS = {name: (-180.0, 180.0) for name in JOINTS}
 

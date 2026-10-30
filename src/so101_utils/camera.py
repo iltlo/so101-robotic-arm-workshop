@@ -9,6 +9,11 @@ import numpy as np
 from so101_utils.config import load_camera
 from so101_utils.transforms import Intrinsics
 
+DEFAULT_WIDTH = 640
+DEFAULT_HEIGHT = 480
+DEFAULT_FPS = 30
+FRAME_TIMEOUT_MS = 2000
+
 
 @dataclass
 class Frame:
@@ -21,7 +26,7 @@ class Frame:
 
 
 class RGBRealSense:
-    def __init__(self, *, serial=None, width=640, height=480, fps=30):
+    def __init__(self, *, serial=None, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT, fps=DEFAULT_FPS):
         import pyrealsense2 as rs
 
         self.pipeline = rs.pipeline()
@@ -42,7 +47,7 @@ class RGBRealSense:
         self.intrinsics.matrix()
 
     def read(self) -> Frame:
-        frames = self.pipeline.wait_for_frames(timeout_ms=2000)
+        frames = self.pipeline.wait_for_frames(timeout_ms=FRAME_TIMEOUT_MS)
         return self._frame(frames)
 
     def poll(self) -> Frame | None:
@@ -74,7 +79,7 @@ def open_camera():
     cfg = load_camera()
     serial = cfg.get("serial") or None
     cam = RGBRealSense(
-        serial=serial, width=cfg["width"], height=cfg["height"], fps=int(cfg.get("fps", 30)),
+        serial=serial, width=cfg["width"], height=cfg["height"], fps=int(cfg["fps"]),
     )
     try:
         yield cam

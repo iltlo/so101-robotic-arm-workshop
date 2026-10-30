@@ -3,19 +3,37 @@
 import math
 import time
 
+from so101_utils.config import joint_offsets, load_robot, validated_limits
+from so101_utils.model import JOINTS, tool_rpy
+
 from .backend import MockBackend, OffsetBackend, connect_live, release_overload
-from .kinematics import JOINTS, Kinematics, tool_rpy
+from .kinematics import Kinematics
 from .motion import MotionError, joint_state, move_joints
 
 MAX_SPEED_DEG_S = 90.0
+MIN_SPEED_DEG_S = 1.0
+MAX_JOINT_STEP_DEG = 2.0
+MOVE_TIMEOUT_S = 60.0
 
-# Metres along gripper_frame_link +Z. Positive follows the blue axis. 20 mm.
+# Servo loop periods, seconds. The mock is slower so Rerun can draw each pose.
+MOCK_PERIOD_S = 0.03
+LIVE_PERIOD_S = 0.02
+
+# Jaw settle: stop early once the position has held for GRIPPER_STABLE_S.
+GRIPPER_TIMEOUT_S = 2.0
+GRIPPER_TOLERANCE_PERCENT = 8.0
+GRIPPER_MOVE_PERCENT = 0.8
+GRIPPER_MIN_HOLD_S = 0.25
+GRIPPER_STABLE_S = 0.2
+GRIPPER_POLL_S = 0.05
+
+# Metres along gripper_frame_link +Z.
 DEFAULT_EE_TOOL_OFFSET_M = 0.020
 
 # Gripper percent. 0 is closed and 100 is fully open. Opening stops halfway.
 OPEN_PERCENT = 50.0
 
-# Folded pose, degrees. The gripper is closed separately (0%).
+# Folded pose, degrees. The gripper is closed separately.
 REST_JOINTS = {
     "shoulder_pan": 0.0,
     "shoulder_lift": -90.0,
@@ -44,12 +62,12 @@ class SO101:
     """
 
     def __init__(self, backend, kinematics: Kinematics, limits, *, mock: bool,
-                 speed_deg_s: float = 90.0, ee_tool_offset: float = DEFAULT_EE_TOOL_OFFSET_M):
+                 speed_deg_s: float = MAX_SPEED_DEG_S,
+                 ee_tool_offset: float = DEFAULT_EE_TOOL_OFFSET_M):
         self._backend = backend
         self._kin = kinematics
         self._limits = limits
         self.mock = mock
-        self._speed = 90.0
         self._goal = None
         self._sent = None
         self._on_motion = None
@@ -66,8 +84,6 @@ class SO101:
     @classmethod
     def connect(cls, mock: bool = False, config_path: str | None = None, *,
                 ee_tool_offset: float = DEFAULT_EE_TOOL_OFFSET_M) -> "SO101":
-        from so101_utils.config import joint_offsets, load_robot, validated_limits
-
         config = load_robot(config_path)
         limits = validated_limits(config)
         kinematics = Kinematics(config["urdf"], ee_tool_offset=ee_tool_offset)
@@ -84,8 +100,8 @@ class SO101:
         self.close()
 
     def close(self) -> None:
-        # A jaw driven into its stop latches an overload fault. Goal = measured
-        # position drops that fault so torque-off can finish and the port can close.
+        # A jaw driven into its stop latches an overload fault. Dropping the fault
+        # first lets torque-off finish and the port close.
         self._unload_motors()
         try:
             self._backend.disconnect()
@@ -119,33 +135,40 @@ class SO101:
         self._on_motion = callback
         callback()
 
+    def refresh(self) -> None:
+        """Run the `track` callback once, if one is registered."""
+        if self._on_motion is not None:
+            self._on_motion()
+
     def on_target(self, callback) -> None:
         """Call `callback(pose)` with the 4x4 goal pose solved by each `move_to`."""
         self._on_target = callback
 
     def set_speed(self, deg_per_s: float) -> None:
-        """Joint speed for later moves, in degrees per second (1 to 120)."""
+        """Joint speed for later moves, in degrees per second (1 to 90)."""
         speed = float(deg_per_s)
-        if not math.isfinite(speed) or not 1.0 <= speed <= MAX_SPEED_DEG_S:
-            raise ValueError(f"Speed must be from 1 to {MAX_SPEED_DEG_S:.0f} deg/s")
+        if not math.isfinite(speed) or not MIN_SPEED_DEG_S <= speed <= MAX_SPEED_DEG_S:
+            raise ValueError(f"Speed must be from {MIN_SPEED_DEG_S:.0f} to {MAX_SPEED_DEG_S:.0f} deg/s")
         self._speed = speed
 
     def get_joints(self) -> dict[str, float]:
         """Arm joints in degrees. Gripper is percent: 0 closed, 100 fully open."""
         return joint_state(self._backend)
 
-    def gripper_link_pose(self):
+    def gripper_frame_pose(self, joints: dict[str, float] | None = None):
+        """4x4 pose of gripper_frame_link. `joints` defaults to the arm right now."""
+        return self._kin.fk(self.get_joints() if joints is None else joints)
+
+    def gripper_link_pose(self, joints: dict[str, float] | None = None):
         """4x4 pose of gripper_link, where the AprilTag is mounted."""
-        return self._kin.fk_gripper_link(self.get_joints())
+        return self._kin.fk_gripper_link(self.get_joints() if joints is None else joints)
 
     def get_pose(self) -> Pose:
-        """Tool pose: metres and XYZ Euler degrees.
+        """Tool pose: metres and XYZ Euler degrees about the base axes.
 
         Position is the point `ee_tool_offset` along gripper_frame_link +Z, the
-        same point `move_to` drives to the goal. Roll, pitch, and yaw are
-        degrees about the base axes: X forward, Y left, Z up. Pitch +90 points
-        the fingers straight down, and a wrist twist in that pose is a yaw.
-        The frame drawn in Rerun stays on gripper_frame_link.
+        same point `move_to` drives to. The frame drawn in Rerun stays on
+        gripper_frame_link.
         """
         return self.pose_at(self.get_joints())
 
@@ -162,12 +185,10 @@ class SO101:
         """Move the tool to a pose in the base frame.
 
         x, y, z are metres of the tool point: `ee_tool_offset` along
-        gripper_frame_link +Z. roll, pitch, and yaw are degrees about the base
-        axes, the angles `get_pose` reports. Pitch +90 points the fingers
-        straight down. Pass all three or none.
-        None leaves orientation free, unless `downward` points the fingers
-        (+X) straight down. The twist about that axis stays free.
-        Returns False when `cancel` stops the move before it finishes.
+        gripper_frame_link +Z. roll, pitch, yaw are base-frame degrees; pass all
+        three or none. Pitch +90 points the fingers straight down. None leaves
+        orientation free, unless `downward` points the fingers straight down.
+        Returns False when `cancel` stops the move.
         """
         point = (float(x), float(y), float(z))
         given = (roll, pitch, yaw)
@@ -188,8 +209,9 @@ class SO101:
     def move_joint(self, name: str, delta_deg: float) -> None:
         """Step one arm joint. The step must be non-zero and at most 2 degrees."""
         delta = float(delta_deg)
-        if name not in JOINTS or not math.isfinite(delta) or delta == 0 or abs(delta) > 2:
-            raise ValueError("Use an arm joint and a step of at most 2 degrees")
+        if (name not in JOINTS or not math.isfinite(delta) or delta == 0
+                or abs(delta) > MAX_JOINT_STEP_DEG):
+            raise ValueError(f"Use an arm joint and a step of at most {MAX_JOINT_STEP_DEG:.0f} degrees")
         base = self.get_joints()[name]
         if self._sent and name in self._sent:
             base = float(self._sent[name])
@@ -203,7 +225,7 @@ class SO101:
         """Fold the arm and close the gripper.
 
         shoulder_lift -90°, elbow_flex 90°, wrist_flex 45°, pan and roll at 0°.
-        Returns False when `cancel` stops the arm move before the fold finishes.
+        Returns False when `cancel` stops the fold.
         """
         arrived = self._move(dict(REST_JOINTS), wait=wait, cancel=cancel)
         if arrived:
@@ -247,9 +269,8 @@ class SO101:
         sent: dict[str, float] = {}
         done = move_joints(
             self._backend, targets, self._limits,
-            # Mock waits a little longer between steps so Rerun can draw each pose.
-            speed_deg_s=self._speed, period_s=0.03 if self.mock else 0.02,
-            timeout_s=60.0, wait=wait, on_step=self._on_motion, cancel=cancel,
+            speed_deg_s=self._speed, period_s=MOCK_PERIOD_S if self.mock else LIVE_PERIOD_S,
+            timeout_s=MOVE_TIMEOUT_S, wait=wait, on_step=self._on_motion, cancel=cancel,
             start=start, commanded=sent,
         )
         if sent:
@@ -261,35 +282,33 @@ class SO101:
     def _gripper(self, percent: float) -> None:
         """Command the gripper (0 closed, 100 fully open).
 
-        A jaw that stops short of the goal is on the stop or an object. The goal
-        is rewritten to that position so the servo is not left in an overload fault.
+        A jaw that stops short is on the stop or an object; the goal is rewritten
+        to that position so the servo is not left in an overload fault.
         """
         self._backend.send_action({"gripper.pos": percent})
-        if self._on_motion is not None:
-            self._on_motion()
+        self.refresh()
         if self.mock:
             return
-        deadline = time.monotonic() + 2.0
+        deadline = time.monotonic() + GRIPPER_TIMEOUT_S
         started = time.monotonic()
         previous = None
         stable_since = started
         while time.monotonic() < deadline:
             measured = self.get_joints()["gripper"]
-            if abs(measured - percent) <= 8.0:
+            if abs(measured - percent) <= GRIPPER_TOLERANCE_PERCENT:
                 return
             now = time.monotonic()
-            if previous is None or abs(measured - previous) >= 0.8:
+            if previous is None or abs(measured - previous) >= GRIPPER_MOVE_PERCENT:
                 stable_since = now
             previous = measured
-            if now - started >= 0.25 and now - stable_since >= 0.2:
+            if now - started >= GRIPPER_MIN_HOLD_S and now - stable_since >= GRIPPER_STABLE_S:
                 self._hold_gripper(measured)
                 return
-            time.sleep(0.05)
+            time.sleep(GRIPPER_POLL_S)
         self._hold_gripper(self.get_joints()["gripper"])
         raise MotionError("Gripper did not settle")
 
     def _hold_gripper(self, percent: float) -> None:
         self._backend.send_action({"gripper.pos": percent})
-        if self._on_motion is not None:
-            self._on_motion()
+        self.refresh()
         print(f"Gripper holding at {percent:.0f}%.")

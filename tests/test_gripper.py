@@ -4,7 +4,7 @@ import pytest
 
 from so101_control.arm import SO101
 from so101_control.backend import connect_follower, release_overload
-from so101_control.kinematics import JOINTS
+from so101_utils.model import JOINTS
 
 
 class _Stall:

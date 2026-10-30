@@ -1,14 +1,11 @@
 """URDF forward kinematics (LeRobot Placo) and pose IK. Joints in degrees, TCP in metres."""
 
-import warnings
-
 import numpy as np
 from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation
 
+from so101_utils.model import JOINTS, gripper_rotation_from_rpy
 from so101_utils.transforms import transform
-
-JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
 
 # Feedback can rest slightly past a calibrated stop. Commanded goals stay inside.
 LIMIT_MARGIN_DEG = 2.0
@@ -17,48 +14,17 @@ _ORIENTATION_M_PER_RAD = 0.05
 # A short translation is solved inside this many degrees of the start. Outside it,
 # the five-joint arm can spin a wrist through a long path that does not change the tool point.
 NEAR_STEP_DEG = 8.0
-# An orientation goal that does not fit in that window is solved again on the full
-# limits. The window used to keep a pitch that was still a degree off.
+# An orientation goal that does not fit in that window is solved again on the full limits.
 NEAR_ORIENTATION_DEG = 1.0
-
-# Fingers within this many degrees of vertical are pitch ±90. The wrist then
-# spins about base Z, which is yaw. A few degrees of lean still counts: the
-# XYZ chart parks that spin in roll until the fingers are exactly vertical.
-_VERTICAL_DEG = 15.0
-
-
-def _vertical_rpy(rotation: np.ndarray) -> np.ndarray | None:
-    """Base yaw of a straight up or down gripper. None when it is not vertical."""
-    fingers = rotation[:, 0]
-    if float(np.hypot(fingers[0], fingers[1])) > np.sin(np.deg2rad(_VERTICAL_DEG)):
-        return None
-    pitch = 90.0 if fingers[2] < 0.0 else -90.0
-    side = rotation[:, 1]
-    yaw = float(np.rad2deg(np.arctan2(-side[0], side[1])))
-    yaw = (yaw + 180.0) % 360.0 - 180.0
-    return np.array([0.0, pitch, yaw], dtype=float)
-
-
-def tool_rpy(gripper_rotation) -> np.ndarray:
-    """Roll, pitch, and yaw in degrees. XYZ Euler about the base axes.
-
-    gripper_frame_link has X out the fingers. Roll is about base X, pitch about
-    base Y, yaw about base Z. Pitch +90 points the fingers straight down.
-    Within 15° of that pose a wrist twist is a yaw and roll stays 0.
-    """
-    rotation = np.asarray(gripper_rotation, dtype=float)
-    vertical = _vertical_rpy(rotation)
-    if vertical is not None:
-        return vertical
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message="Gimbal lock detected")
-        roll, pitch, yaw = Rotation.from_matrix(rotation).as_euler("xyz", degrees=True)
-    return np.array([roll, pitch, yaw], dtype=float)
-
-
-def gripper_rotation_from_rpy(rpy) -> np.ndarray:
-    """gripper_frame_link rotation for base-frame XYZ Euler degrees."""
-    return Rotation.from_euler("xyz", np.asarray(rpy, dtype=float), degrees=True).as_matrix()
+# Residual weight that pulls gripper +X toward straight down, and the +X.z it accepts.
+DOWNWARD_WEIGHT = 0.05
+DOWNWARD_Z = -0.95
+# Least-squares iteration caps for the near and full-limit solves.
+NEAR_NFEV = 100
+FULL_NFEV = 400
+# A solved pose counts once its tool point is this close, and orientation this close.
+DEFAULT_TOLERANCE_M = 0.015
+DEFAULT_TOLERANCE_DEG = 8.0
 
 
 class Kinematics:
@@ -93,24 +59,19 @@ class Kinematics:
         return transform(self.solver.robot.get_T_world_frame("gripper_link"))
 
     def position_ik(self, state: dict[str, float], target, limits: dict[str, tuple[float, float]],
-                    *, tolerance_m: float = 0.015, tolerance_deg: float = 8.0,
+                    *, tolerance_m: float = DEFAULT_TOLERANCE_M,
+                    tolerance_deg: float = DEFAULT_TOLERANCE_DEG,
                     downward: bool = False, rpy=None) -> dict[str, float]:
         """Solve the five arm joints so the tool point reaches target xyz.
 
-        The tool point is `ee_tool_offset` along gripper_frame_link +Z.
-        `rpy` is roll, pitch, and yaw in degrees about the base axes, the same
-        angles a pose reports. Pitch +90 points the fingers straight down.
-        Orientation is free when `rpy` is omitted.
-        `downward` points +X (the fingers) straight down and leaves the twist
-        about that axis free. An `rpy` target can be rejected when the
-        orientation is outside `tolerance_deg`.
+        The tool point is `ee_tool_offset` along gripper_frame_link +Z. `rpy` is
+        base-frame XYZ Euler degrees, the angles a pose reports; omit it for free
+        orientation. `downward` points the fingers (+X) straight down and leaves
+        the twist about that axis free.
 
-        The first attempt stays within `NEAR_STEP_DEG` of `state`, so a 5 mm
-        step does not spin a joint. A point outside that window, or an
-        orientation that misses by more than `NEAR_ORIENTATION_DEG`, is solved
-        again on the full limits. If that still misses, one more solve starts from
-        the home pose. A folded arm can sit in a local minimum that hides a
-        point the home pose reaches. The mock arm is created already there.
+        The first attempt stays within `NEAR_STEP_DEG` of `state` so a 5 mm step
+        does not spin a joint. A point outside that window, or an orientation off
+        by more than `NEAR_ORIENTATION_DEG`, is solved again on the full limits.
         """
         goal = np.asarray(target, dtype=float)
         if goal.shape != (3,) or not np.isfinite(goal).all():
@@ -143,7 +104,7 @@ class Kinematics:
             if not downward:
                 return position
             # +X (fingers) straight down. Twist about that axis stays free.
-            return np.hstack([position, 0.05 * (pose[:3, 0] - np.array([0.0, 0.0, -1.0]))])
+            return np.hstack([position, DOWNWARD_WEIGHT * (pose[:3, 0] - np.array([0.0, 0.0, -1.0]))])
 
         def position_error(angles) -> float:
             return float(np.linalg.norm(self.tool_point(self.fk(dict(zip(JOINTS, angles)))) - goal))
@@ -158,7 +119,7 @@ class Kinematics:
                 return False
             if goal_rotation is not None and orientation_error_deg(angles) > tolerance_deg:
                 return False
-            if downward and self.fk(dict(zip(JOINTS, angles)))[2, 0] >= -0.95:
+            if downward and self.fk(dict(zip(JOINTS, angles)))[2, 0] >= DOWNWARD_Z:
                 return False
             return True
 
@@ -166,17 +127,17 @@ class Kinematics:
         near_upper = np.minimum(upper, initial + NEAR_STEP_DEG)
         solved = None
         if np.all(near_lower < near_upper):
-            near = least_squares(error, initial, bounds=(near_lower, near_upper), max_nfev=100)
+            near = least_squares(error, initial, bounds=(near_lower, near_upper), max_nfev=NEAR_NFEV)
             orientation_fits = goal_rotation is None or orientation_error_deg(near.x) <= NEAR_ORIENTATION_DEG
             if orientation_fits and near_enough(near.x):
                 solved = near.x
         if solved is None:
-            result = least_squares(error, initial, bounds=(lower, upper), max_nfev=400)
-            # A click during homing used to leave the seed on a halfway pose.
-            # The same point still solves from the home joints.
+            result = least_squares(error, initial, bounds=(lower, upper), max_nfev=FULL_NFEV)
+            # A folded or mid-move seed can sit in a local minimum that the home
+            # joints escape, so retry from home before giving up.
             if position_error(result.x) > tolerance_m:
                 home = np.clip(np.zeros_like(initial), lower, upper)
-                alt = least_squares(error, home, bounds=(lower, upper), max_nfev=400)
+                alt = least_squares(error, home, bounds=(lower, upper), max_nfev=FULL_NFEV)
                 if position_error(alt.x) < position_error(result.x):
                     result = alt
             if position_error(result.x) > tolerance_m:

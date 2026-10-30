@@ -10,8 +10,9 @@ import pytest
 
 from so101_control import SO101
 from so101_control.arm import OPEN_PERCENT, REST_JOINTS
-from so101_control.kinematics import JOINTS
+from so101_utils.click_app import attach_camera
 from so101_utils.click_view import click_view
+from so101_utils.model import JOINTS
 
 _SCRIPT = Path(__file__).resolve().parents[1] / "application" / "click_and_pick.py"
 
@@ -54,11 +55,10 @@ class _Cam:
 
 
 def test_camera_frame_is_up_before_home_and_keeps_updating():
-    module = _load()
     image = np.zeros((8, 8, 3), np.uint8)
     shown = []
     with SO101.connect(mock=True) as arm, click_view(8, 8) as (view, url):
-        module.attach_camera(arm, _Cam(image), view, shown.append)
+        attach_camera(arm, _Cam(image), view, shown.append)
         assert urlopen(url + "frame").status == 200
         assert _get_status(url) == "Waiting for a click"
         before = len(shown)
@@ -130,7 +130,7 @@ def test_pick_stops_above_then_comes_straight_down():
 
         def closed():
             pose = arm.get_pose()
-            fingers = arm._kin.fk(arm.get_joints())[:3, 0]
+            fingers = arm.gripper_frame_pose()[:3, 0]
             seen.append(("grip", pose.x, pose.y, pose.z, fingers[2]))
             grip()
 
@@ -171,7 +171,7 @@ def test_hold_keeps_the_camera_updating():
     refreshes = []
 
     class _Arm:
-        def _on_motion(self):
+        def refresh(self):
             refreshes.append(time.monotonic())
 
     started = time.monotonic()

@@ -6,9 +6,9 @@ import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
 
-from so101_control.kinematics import (
-    JOINTS, NEAR_STEP_DEG, Kinematics, gripper_rotation_from_rpy, tool_rpy)
+from so101_control.kinematics import NEAR_STEP_DEG, Kinematics
 from so101_utils.config import load_robot, validated_limits
+from so101_utils.model import JOINTS, gripper_rotation_from_rpy, tool_rpy
 
 URDF = Path(__file__).parents[1] / "assets/SO101/so101_new_calib.urdf"
 

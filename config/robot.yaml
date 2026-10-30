@@ -16,3 +16,11 @@ joint_offsets_deg:
   elbow_flex: -7.0
   wrist_flex: -1.0
   wrist_roll: 0.0
+# AprilTag on gripper_link. Metres, then Ry and Rz about gripper_link axes.
+tag:
+  family: tag36h11
+  id: 0
+  size_m: 0.04
+  mount_xyz_m: [-0.0372, 0.0, -0.0284]
+  mount_ry_deg: 90.0
+  mount_rz_deg: 180.0

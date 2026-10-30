@@ -9,7 +9,7 @@ move them, unless you pass --relax (T turns torque off; support the arm).
 
 from so101_control import SO101
 from so101_utils.config import arm_parser, load_robot
-from so101_utils.twin import Twin, follow, play_demo
+from so101_utils.views import Twin, follow, play_demo
 
 
 if __name__ == "__main__":

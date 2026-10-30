@@ -126,20 +126,29 @@ def residuals(samples, base_T_camera, gripper_T_tag):
     return np.array(translation), np.array(degrees)
 
 
+DEFAULT_MAX_ERROR_M = 0.020
+DEFAULT_MAX_ERROR_DEG = 8.0
+# A calibration needs at least this many poses, spread about two rotation axes.
+MIN_POSES = 4
+MIN_ROTATION_RANK = 2
+ROTATION_SPREAD_TOL = 0.06
+
+
 def solve_eye_to_hand(samples: list[Sample], gripper_T_tag: np.ndarray,
-                      *, max_error_m=0.020, max_error_deg=8.0) -> dict:
+                      *, max_error_m=DEFAULT_MAX_ERROR_M,
+                      max_error_deg=DEFAULT_MAX_ERROR_DEG) -> dict:
     """Fixed camera, known tag mount.
 
     Each sample is base_T_camera = base_T_gripper @ gripper_T_tag @ inv(camera_T_tag).
     The saved pose is the average of those samples.
     """
-    if len(samples) < 4:
-        raise ValueError("Collect at least 4 diverse settled poses")
+    if len(samples) < MIN_POSES:
+        raise ValueError(f"Collect at least {MIN_POSES} diverse settled poses")
     mount = transform(gripper_T_tag)
     checked = [Sample(transform(s.base_T_gripper), transform(s.camera_T_tag)) for s in samples]
     rotations = Rotation.from_matrix([sample.base_T_gripper[:3, :3] for sample in checked])
     spread = (rotations[0].inv() * rotations).as_rotvec()
-    if np.linalg.matrix_rank(spread, tol=0.06) < 2:
+    if np.linalg.matrix_rank(spread, tol=ROTATION_SPREAD_TOL) < MIN_ROTATION_RANK:
         raise ValueError("Robot poses lack independent rotation axes")
     candidates = [s.base_T_gripper @ mount @ np.linalg.inv(s.camera_T_tag) for s in checked]
     bTc = transform(average_transforms(candidates))

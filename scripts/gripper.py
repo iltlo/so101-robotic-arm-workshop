@@ -8,7 +8,10 @@ import time
 
 from so101_control import SO101
 from so101_utils.config import arm_parser, load_robot
-from so101_utils.twin import watch_arm
+from so101_utils.views import watch_arm
+
+# Time to see the open jaw before it closes.
+VIEW_PAUSE_S = 0.5
 
 
 if __name__ == "__main__":
@@ -19,7 +22,7 @@ if __name__ == "__main__":
             print("Mock arm is in the Rerun window.")
         print("Opening.")
         arm.release()
-        time.sleep(0.5)
+        time.sleep(VIEW_PAUSE_S)
         print("Closing.")
         arm.grip()
         print(f"gripper = {arm.get_joints()['gripper']:.0f}%")

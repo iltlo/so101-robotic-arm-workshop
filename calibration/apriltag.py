@@ -1,15 +1,17 @@
 """Show the AprilTag in the camera frame. The arm is not connected.
 
-Tag family tag36h11, id 0, 40 mm black-square edge. Ctrl-C stops.
+Tag family, id, and size come from config/robot.yaml. Ctrl-C stops.
 """
 
 from so101_utils.camera import open_camera
-from so101_utils.tags import TagView
+from so101_utils.config import load_robot
+from so101_utils.views import TagView
 
 
 if __name__ == "__main__":
+    tag = load_robot()["tag"]
     with open_camera() as cam:
-        view = TagView(cam.intrinsics, tag_id=0, tag_size_m=0.04)
+        view = TagView(cam.intrinsics, tag)
         print("AprilTag in Rerun. Ctrl-C stops. No arm motion.")
         try:
             while True:

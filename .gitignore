@@ -1,4 +1,5 @@
-references/
+# Vendored third-party checkouts.
+reference/
 
 # Python and uv-generated environments (uv uses .venv by default unless
 # UV_PROJECT_ENVIRONMENT=.uv-so101 is set in the shell).
@@ -22,12 +23,5 @@ htmlcov/
 *.rrd
 *.rbl
 
-# Per-station measurements and pinned model downloads (fetched at setup).
-# assets/SO101/
-# config/robot.yaml
-# config/camera.yaml
-# config/hand_eye.yaml
-
-# VS Code's generated browse database; retain checked-in editor settings.
-.vscode/browse.vc.db*
+# VS Code's generated browse database and other local editor state.
 .vscode/

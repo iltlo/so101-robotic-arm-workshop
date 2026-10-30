@@ -7,7 +7,7 @@ from scipy.spatial.transform import Rotation
 from so101_control import SO101
 from so101_control.arm import DEFAULT_EE_TOOL_OFFSET_M, OPEN_PERCENT
 from so101_control.backend import MockBackend, OffsetBackend
-from so101_control.kinematics import JOINTS
+from so101_utils.model import JOINTS
 
 
 def test_context_manager_and_speed_clamp():

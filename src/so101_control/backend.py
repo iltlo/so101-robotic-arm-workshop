@@ -2,7 +2,10 @@
 
 import time
 
-from .kinematics import JOINTS
+from so101_utils.model import JOINTS
+
+# Time for a goal rewrite to reach the servo before torque-off.
+OVERLOAD_RELEASE_S = 0.1
 
 
 class MockBackend:
@@ -59,7 +62,7 @@ class OffsetBackend:
 def release_overload(bus) -> None:
     """Point every goal at the measured angle so a stalled jaw can drop its fault."""
     bus.sync_write("Goal_Position", bus.sync_read("Present_Position"))
-    time.sleep(0.1)
+    time.sleep(OVERLOAD_RELEASE_S)
 
 
 def connect_follower(follower) -> None:

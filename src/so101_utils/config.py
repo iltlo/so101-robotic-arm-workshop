@@ -6,8 +6,10 @@ import math
 
 import numpy as np
 import yaml
+from scipy.spatial.transform import Rotation
 
-from so101_control.kinematics import JOINTS
+from so101_utils.model import JOINTS
+from so101_utils.tags import Tag
 from so101_utils.transforms import Intrinsics, transform
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -31,12 +33,37 @@ def _resolve(path: str) -> str:
 
 
 def load_robot(path: str | Path | None = None) -> dict:
-    """port, arm_id, urdf, joint limits, and station joint offsets."""
+    """port, arm_id, urdf, joint limits, station joint offsets, and the tag mount."""
     data = _load(Path(path) if path else CONFIG / "robot.yaml")
     if "urdf" not in data or "port" not in data:
         raise ValueError("robot.yaml needs port and urdf")
     data["urdf"] = _resolve(data["urdf"])
+    data["tag"] = tag_config(data)
     return data
+
+
+def tag_config(config: dict) -> Tag:
+    """Validate the AprilTag section of robot.yaml."""
+    raw = config.get("tag")
+    if not isinstance(raw, dict):
+        raise ValueError("robot.yaml needs a tag section")
+    try:
+        family = str(raw["family"])
+        tag_id = int(raw["id"])
+        size_m = float(raw["size_m"])
+        xyz = np.asarray(raw["mount_xyz_m"], dtype=float)
+        ry = float(raw["mount_ry_deg"])
+        rz = float(raw["mount_rz_deg"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid tag section in robot.yaml: {exc}") from exc
+    if (not family or tag_id < 0 or not np.isfinite([size_m, ry, rz]).all()
+            or size_m <= 0 or xyz.shape != (3,) or not np.isfinite(xyz).all()):
+        raise ValueError("Invalid tag family, id, size, or mount")
+    mount = np.eye(4)
+    mount[:3, 3] = xyz
+    mount[:3, :3] = (Rotation.from_euler("y", ry, degrees=True)
+                     * Rotation.from_euler("z", rz, degrees=True)).as_matrix()
+    return Tag(family, tag_id, size_m, transform(mount))
 
 
 def joint_offsets(config: dict) -> dict[str, float]:
@@ -70,8 +97,8 @@ def load_camera(path: str | Path | None = None) -> dict:
     data = _load(Path(path) if path else CONFIG / "camera.yaml")
     intr = data.get("intrinsics") or {}
     data["intrinsics"] = Intrinsics(
-        int(data.get("width", intr.get("width", 640))),
-        int(data.get("height", intr.get("height", 480))),
+        int(data["width"]),
+        int(data["height"]),
         float(intr["fx"]), float(intr["fy"]), float(intr["cx"]), float(intr["cy"]),
         tuple(intr.get("distortion") or ()),
         str(intr.get("distortion_model") or "brown_conrady"),
@@ -116,8 +143,9 @@ def save_hand_eye(base_T_camera, *, residual_m: float, residual_deg: float) -> N
 
 
 def arm_parser(description: str) -> argparse.ArgumentParser:
-    """Scripts require either --mock or --live."""
-    parser = argparse.ArgumentParser(description=description)
+    """Scripts require either --mock or --live. The description keeps its line breaks."""
+    parser = argparse.ArgumentParser(
+        description=description, formatter_class=argparse.RawDescriptionHelpFormatter)
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--mock", action="store_true", help="run the in-memory arm")
     group.add_argument("--live", action="store_true", help="connect to the follower")

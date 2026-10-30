@@ -1,7 +1,7 @@
 """Print the TCP pose until Ctrl-C. Metres and degrees, robot base frame.
 
 Torque is off, so the arm can be posed by hand. Support it; it can fall.
-Joint angles are printed to 0.1 degree. The same two lines are rewritten.
+Joint angles are printed to 0.1 degree.
 
     uv run python scripts/get_pose.py --mock
     uv run python scripts/get_pose.py --live
@@ -10,8 +10,10 @@ Joint angles are printed to 0.1 degree. The same two lines are rewritten.
 import time
 
 from so101_control import SO101
-from so101_control.kinematics import JOINTS
 from so101_utils.config import arm_parser
+from so101_utils.model import JOINTS
+
+PRINT_PERIOD_S = 0.1
 
 
 if __name__ == "__main__":
@@ -30,6 +32,6 @@ if __name__ == "__main__":
                     f"{angles} deg  gripper={state['gripper']:.1f}%\033[K",
                     flush=True,
                 )
-                time.sleep(0.1)
+                time.sleep(PRINT_PERIOD_S)
         except KeyboardInterrupt:
             print("\nStopped.")

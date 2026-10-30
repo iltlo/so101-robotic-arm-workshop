@@ -11,15 +11,8 @@
     + / -          : larger / smaller step
     Esc            : quit
 
-Each press steps immediately. The next key does not wait for the arm to settle.
-Hold a movement key to keep stepping. WASD and Q/E move the tool point and
-leave orientation free. Z/C and F/V send the base-frame roll, pitch, and yaw.
-
     uv run python scripts/keyboard_control.py --mock
     uv run python scripts/keyboard_control.py --live
-
-Rerun follows the measured joints, including while a move is still catching up.
---mock moves that drawing and does not open the serial port. Esc quits.
 """
 
 from collections import deque
@@ -30,19 +23,29 @@ from pynput import keyboard
 
 from so101_control import SO101
 from so101_utils.config import arm_parser, load_robot
-from so101_utils.twin import watch_arm
+from so101_utils.views import watch_arm
 
 _MOVES = {"w", "a", "s", "d", "q", "e", "z", "c", "f", "v"}
-# Same as the arm default. An 8° step at this speed holds the next key for about 0.09 s.
+# Same as the arm default.
 TELEOP_SPEED_DEG_S = 90.0
+# Metres per translation key press, and the range the +/- keys step through.
+STEP_M = 0.005
+MIN_STEP_M = 0.005
+MAX_STEP_M = 0.05
+# Degrees per roll and pitch key press.
+ROLL_STEP_DEG = 5.0
+PITCH_STEP_DEG = 5.0
+# Loop pacing when nothing moved the arm, or the move was rejected.
+IDLE_S = 0.02
+ERROR_S = 0.05
 
 
 class Teleop:
     def __init__(self, arm: SO101):
         self.arm = arm
-        self.step = 0.005  # metres
-        self.roll_step = 5.0  # degrees, base roll
-        self.pitch_step = 5.0  # degrees, base pitch
+        self.step = STEP_M
+        self.roll_step = ROLL_STEP_DEG
+        self.pitch_step = PITCH_STEP_DEG
         self.closed = False
         self.running = True
         self._command = None  # xyz metres; roll, pitch, yaw only while those keys are used
@@ -103,7 +106,7 @@ class Teleop:
             return
         dx, dy, dz, dr, dp = self._delta(held)
         if dx == dy == dz == dr == dp == 0.0:
-            time.sleep(0.02)
+            time.sleep(IDLE_S)
             return
         self._nudge(dx, dy, dz, dr, dp)
 
@@ -173,11 +176,11 @@ class Teleop:
             self.closed = not self.closed
             return True
         if token in {"+", "="}:
-            self.step = min(0.05, self.step + 0.005)
+            self.step = min(MAX_STEP_M, self.step + STEP_M)
             print(f"Step {self.step:.3f} m")
             return True
         if token == "-":
-            self.step = max(0.005, self.step - 0.005)
+            self.step = max(MIN_STEP_M, self.step - STEP_M)
             print(f"Step {self.step:.3f} m")
             return True
         return True
@@ -200,12 +203,11 @@ class Teleop:
             pitch = base[4] + dp
             yaw = base[5]
         try:
-            # Do not wait for the 2° settle band. A live joint often stops
-            # short of it, and that wait used to block every later key.
+            # No settle wait: a live joint often stops short of the 2° band.
             self.arm.move_to(x, y, z, roll, pitch, yaw, wait=False)
         except (ValueError, RuntimeError) as exc:
             self._say(str(exc))
-            time.sleep(0.05)
+            time.sleep(ERROR_S)
             return True
         self._command = (x, y, z, roll, pitch, yaw)
         self._notice = None
@@ -240,14 +242,10 @@ if __name__ == "__main__":
         print(teleop.arm.get_pose())
         print("Keyboard control. Esc quits. Keep clear of the arm.")
 
-        def refresh() -> None:
-            twin.show(arm)
-            twin.rr.get_global_data_recording().flush(timeout_sec=0)
-
         with keyboard.Listener(on_press=teleop.on_press, on_release=teleop.on_release) as listener:
             if not listener.is_alive():
                 raise RuntimeError("Keyboard listener did not start. An X11 session is required.")
             try:
-                run(teleop, listener.is_alive, refresh)
+                run(teleop, listener.is_alive, arm.refresh)
             except KeyboardInterrupt:
                 print("Stopped.")

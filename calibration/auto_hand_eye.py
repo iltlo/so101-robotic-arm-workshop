@@ -1,13 +1,9 @@
 """Automatic eye-to-hand calibration. Drives the arm through fixed poses.
 
-Uses the neat poses in calibration/poses.md: five recorded poses, then the same
-set mirrored through the base XZ plane (y → −y, yaw → −yaw). Roll stays at
-−170° so the wrist does not hit the stop.
-
-Each step sends move_to without waiting on encoder settle (so a soft arm is
-not blocked), dwells, then samples FK(gripper_link) plus the tag at wherever
-the arm actually stopped. Start and end at the rest pose. Needs at least 4
-successful tag captures to save.
+The recorded poses plus their base-XZ mirror live in calibration/poses.md. Roll
+stays at −170° so the wrist does not hit the stop. Each step sends move_to
+without waiting on encoder settle, dwells, then samples FK(gripper_link) and the
+tag wherever the arm stopped. Needs 4 tag captures to save.
 
     uv run python calibration/auto_hand_eye.py --live
     uv run python calibration/auto_hand_eye.py --mock
@@ -16,20 +12,13 @@ successful tag captures to save.
 import time
 
 import numpy as np
-from scipy.spatial.transform import Rotation
 
 from so101_control import SO101
 from so101_control.motion import MotionError
 from so101_utils.camera import open_camera
 from so101_utils.config import arm_parser, load_robot, save_camera_intrinsics, save_hand_eye
-from so101_utils.transforms import Sample, solve_eye_to_hand
-from so101_utils.twin import HandEyeView
-
-# Same mount as calibration/hand_eye.py.
-GRIPPER_T_TAG = np.eye(4)
-GRIPPER_T_TAG[:3, 3] = [-0.0372, 0.0, -0.0284]
-GRIPPER_T_TAG[:3, :3] = (Rotation.from_euler("y", 90, degrees=True)
-                         * Rotation.from_euler("z", 180, degrees=True)).as_matrix()
+from so101_utils.transforms import MIN_POSES, Sample, solve_eye_to_hand
+from so101_utils.views import HandEyeView
 
 # x y z roll pitch yaw. Roll fixed at -170.
 _RECORDED = (
@@ -53,21 +42,17 @@ def calibration_poses():
 
 
 def capture_sample(arm, cam, view, estimate):
-    """One photo + FK(gripper_link) from the joints at that same moment.
-
-    The next move_to is not started until this returns, so the arm is not
-    heading to another goal while we shoot.
-    """
+    """One frame plus FK(gripper_link) from the joints at that same moment."""
     time.sleep(DWELL_S)
     frame = cam.read()
     joints = arm.get_joints()
-    base_T_gripper = arm._kin.fk_gripper_link(joints)
+    base_T_gripper = arm.gripper_link_pose(joints)
     camera_T_tag = view.update(frame, arm, estimate)
     if camera_T_tag is None:
         print("  No tag in view; skip.")
         return None, estimate
     sample = Sample(base_T_gripper, camera_T_tag)
-    preview = base_T_gripper @ GRIPPER_T_TAG @ np.linalg.inv(camera_T_tag)
+    preview = base_T_gripper @ view.tag.gripper_T_tag @ np.linalg.inv(camera_T_tag)
     return sample, preview
 
 
@@ -84,8 +69,7 @@ def run(arm, cam, view) -> bool:
         print(f"[{index}/{len(poses)}] move_to "
               f"xyz=({x:.2f}, {y:+.2f}, {z:.2f}) rpy=({roll:.0f}, {pitch:.0f}, {yaw:.0f})")
         try:
-            # wait=False: finish sending this pose's trajectory, do not block on
-            # encoder settle. Capture runs before the next move_to.
+            # wait=False: send the trajectory without blocking on encoder settle.
             arm.move_to(x, y, z, roll, pitch, yaw, wait=False)
         except (ValueError, MotionError) as exc:
             print(f"  Move failed: {exc}")
@@ -98,10 +82,10 @@ def run(arm, cam, view) -> bool:
         print(f"  Captured ({len(samples)} samples).")
 
     arm.rest()
-    if len(samples) < 4:
-        print(f"Only {len(samples)} samples; need at least 4. Not saved.")
+    if len(samples) < MIN_POSES:
+        print(f"Only {len(samples)} samples; need at least {MIN_POSES}. Not saved.")
         return False
-    solved = solve_eye_to_hand(samples, GRIPPER_T_TAG)
+    solved = solve_eye_to_hand(samples, view.tag.gripper_T_tag)
     save_hand_eye(solved["base_T_camera"], residual_m=solved["max_residual_m"],
                   residual_deg=solved["max_residual_deg"])
     print(f"Saved {len(samples)} samples. Residual "
@@ -113,7 +97,7 @@ if __name__ == "__main__":
     args = arm_parser(__doc__).parse_args()
     config = load_robot()
     with SO101.connect(mock=args.mock) as arm, open_camera() as cam:
-        view = HandEyeView(config["urdf"], cam.intrinsics, GRIPPER_T_TAG)
+        view = HandEyeView(config["urdf"], cam.intrinsics, config["tag"])
         try:
             run(arm, cam, view)
         except KeyboardInterrupt:

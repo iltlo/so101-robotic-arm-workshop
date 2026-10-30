@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation, Slerp
 
-from so101_utils.config import load_hand_eye
+from so101_utils.config import load_hand_eye, load_robot
 from so101_utils.transforms import Sample, average_transforms, solve_eye_to_hand
 
 _AUTO = Path(__file__).parents[1] / "calibration" / "auto_hand_eye.py"
@@ -20,14 +20,6 @@ def _pose(rvec, xyz):
     result = np.eye(4)
     result[:3, :3] = Rotation.from_rotvec(rvec).as_matrix()
     result[:3, 3] = xyz
-    return result
-
-
-def _mount():
-    result = np.eye(4)
-    result[:3, 3] = [-0.0372, 0.0, -0.0284]
-    result[:3, :3] = (Rotation.from_euler("y", 90, degrees=True)
-                      * Rotation.from_euler("z", 180, degrees=True)).as_matrix()
     return result
 
 
@@ -45,7 +37,7 @@ def test_rotation_average_is_progressive_slerp():
 
 
 def test_known_mount_recovers_the_camera():
-    mount = _mount()
+    mount = load_robot()["tag"].gripper_T_tag
     base_T_camera = _pose([0.2, 0.1, -0.1], [0.18, -0.09, 0.45])
     rng = np.random.default_rng(4)
     samples = []
@@ -59,7 +51,7 @@ def test_known_mount_recovers_the_camera():
 
 
 def test_too_few_poses_are_rejected():
-    mount = _mount()
+    mount = load_robot()["tag"].gripper_T_tag
     with pytest.raises(ValueError, match="4"):
         solve_eye_to_hand([Sample(np.eye(4), np.eye(4))] * 3, mount)
 

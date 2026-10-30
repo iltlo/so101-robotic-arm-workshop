@@ -20,7 +20,7 @@ Not in this workshop: YOLO, depth picking, and the interactive motor-calibration
 
 ## Safety
 
-Clear the table before any `--live` command. Joint speed defaults to 90 deg/s and will not go above 120. Change it with `arm.set_speed(...)`. Torque off (`T` in the twin, or during hand-eye) lets the arm fall: support it, and keep a power cutoff within reach. Ctrl-C and the keyboard are not emergency stops. There is no collision checker.
+Clear the table before any `--live` command. Joint speed defaults to 90 deg/s, which is also the maximum. Change it with `arm.set_speed(...)`. Torque off (`T` in the twin, or during hand-eye) lets the arm fall: support it, and keep a power cutoff within reach. Ctrl-C and the keyboard are not emergency stops. There is no collision checker.
 
 ## 1. Install
 
@@ -91,7 +91,7 @@ uv run python scripts/joint_jog.py --mock
 
 Type `shoulder_pan 1`, then `q`.
 
-Keyboard teleop (WASD / arrows move x and y, Q/E move z, and those translation keys leave orientation free. Z/C change base roll, F/V change base pitch, R rests, H homes, space toggles the gripper, Esc quits). Rerun shows the arm. `--mock` moves that drawing and does not open the serial port.
+Keyboard teleop (WASD / arrows move x and y, Q/E move z, and those translation keys leave orientation free. Z/C change base roll, F/V change base pitch, R rests, H homes, space toggles the gripper, Esc quits). Rerun shows the arm, joint angles, and end-effector pose. `--mock` moves that drawing and does not open the serial port.
 
 ```sh
 uv run python scripts/keyboard_control.py --mock
@@ -100,7 +100,7 @@ uv run python scripts/keyboard_control.py --live
 
 ## 6. AprilTag
 
-Camera only. No arm. The tag is tag36h11, id 0, 40 mm black-square edge. Ctrl-C stops.
+Camera only. No arm. The tag is tag36h11, id 0, 40 mm black-square edge, as set in the `tag:` section of `config/robot.yaml`. Ctrl-C stops.
 
 ```sh
 uv run python calibration/apriltag.py
@@ -108,12 +108,12 @@ uv run python calibration/apriltag.py
 
 ## 7. Hand-eye
 
-The camera stays fixed. The same tag is mounted on `gripper_link` at [-37.2, 0, -28.4] mm, with Ry(90°) then Rz(180°). That mount is `GRIPPER_T_TAG` at the top of `calibration/hand_eye.py`.
+The camera stays fixed. The same tag is mounted on `gripper_link` at [-37.2, 0, -28.4] mm, with Ry(90°) then Rz(180°). That mount is the `tag:` section of `config/robot.yaml` (`mount_xyz_m`, `mount_ry_deg`, `mount_rz_deg`).
 
 Each sample is:
 
 ```text
-base_T_camera = base_T_gripper @ GRIPPER_T_TAG @ inv(camera_T_tag)
+base_T_camera = base_T_gripper @ gripper_T_tag @ inv(camera_T_tag)
 ```
 
 Press **Enter** at four or more settled poses, then **C**. The result is the average of those samples (mean translation, short-arc SLERP for rotation) and is written to `config/hand_eye.yaml`. **T** turns torque off so you can pose the arm; support it first. **Q** quits without saving.
@@ -133,7 +133,7 @@ uv run python calibration/auto_hand_eye.py --mock
 
 A click is a ray through that pixel. It hits the base-link plane **z = 0**. The arm starts at the rest pose, then moves the gripper frame (tool offset 0) to that point plus `HOVER_M` (0.02 m) along +Z. Depth is not used.
 
-Rerun shows the arm and the camera image together. `--mock` moves the drawn arm. The click itself is on the printed browser page: this Rerun version does not report image clicks back to the script.
+Rerun shows the arm, joint angles, end-effector pose, and the camera image together. `--mock` moves the drawn arm. The click itself is on the printed browser page: this Rerun version does not report image clicks back to the script.
 
 ```sh
 uv run python application/click_and_go.py --mock
@@ -166,7 +166,7 @@ uv run python application/pick_and_place.py --live
 
 | File | What you edit |
 | --- | --- |
-| `config/robot.yaml` | port, arm id, URDF, joint limits, joint offsets |
+| `config/robot.yaml` | port, arm id, URDF, joint limits, joint offsets, tag family/id/size and mount |
 | `config/camera.yaml` | resolution, fps, intrinsics, distortion |
 | `config/hand_eye.yaml` | `base_T_camera`, written by the calibration script |
 
