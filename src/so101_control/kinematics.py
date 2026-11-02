@@ -16,6 +16,10 @@ _ORIENTATION_M_PER_RAD = 0.05
 NEAR_STEP_DEG = 8.0
 # An orientation goal that does not fit in that window is solved again on the full limits.
 NEAR_ORIENTATION_DEG = 1.0
+# Weight that pulls a solve without an rpy target back toward the start
+# orientation, in metres per radian. Position alone leaves a null space, so
+# without it the wrist twist random-walks from step to step.
+KEEP_ORIENTATION_M_PER_RAD = 0.05
 # Residual weight that pulls gripper +X toward straight down, and the +X.z it accepts.
 DOWNWARD_WEIGHT = 0.05
 DOWNWARD_Z = -0.95
@@ -65,9 +69,9 @@ class Kinematics:
         """Solve the five arm joints so the tool point reaches target xyz.
 
         The tool point is `ee_tool_offset` along gripper_frame_link +Z. `rpy` is
-        base-frame XYZ Euler degrees, the angles a pose reports; omit it for free
-        orientation. `downward` points the fingers (+X) straight down and leaves
-        the twist about that axis free.
+        base-frame XYZ Euler degrees, the angles a pose reports; omit it to keep
+        the start orientation. `downward` points the fingers (+X) straight down
+        and keeps the twist about that axis.
 
         The first attempt stays within `NEAR_STEP_DEG` of `state` so a 5 mm step
         does not spin a joint. A point outside that window, or an orientation off
@@ -94,6 +98,10 @@ class Kinematics:
             raise ValueError("Starting pose outside joint limits")
         initial = np.clip(initial, lower, upper)
 
+        keep_rotation = None
+        if goal_rotation is None:
+            keep_rotation = self.fk(dict(zip(JOINTS, initial)))[:3, :3]
+
         def error(angles):
             joints = dict(zip(JOINTS, angles))
             pose = self.fk(joints)
@@ -101,10 +109,14 @@ class Kinematics:
             if goal_rotation is not None:
                 delta = Rotation.from_matrix(goal_rotation.T @ pose[:3, :3]).as_rotvec()
                 return np.hstack([position, _ORIENTATION_M_PER_RAD * delta])
+            relative = Rotation.from_matrix(pose[:3, :3] @ keep_rotation.T).as_rotvec()
             if not downward:
-                return position
-            # +X (fingers) straight down. Twist about that axis stays free.
-            return np.hstack([position, DOWNWARD_WEIGHT * (pose[:3, 0] - np.array([0.0, 0.0, -1.0]))])
+                return np.hstack([position, KEEP_ORIENTATION_M_PER_RAD * relative])
+            # +X (fingers) straight down. The finger axis alone leaves the twist
+            # about it undetermined, so anchor that component too.
+            return np.hstack([position,
+                              DOWNWARD_WEIGHT * (pose[:3, 0] - np.array([0.0, 0.0, -1.0])),
+                              KEEP_ORIENTATION_M_PER_RAD * float(np.dot(relative, pose[:3, 0]))])
 
         def position_error(angles) -> float:
             return float(np.linalg.norm(self.tool_point(self.fk(dict(zip(JOINTS, angles)))) - goal))

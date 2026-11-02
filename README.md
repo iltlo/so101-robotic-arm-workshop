@@ -91,7 +91,7 @@ uv run python scripts/joint_jog.py --mock
 
 Type `shoulder_pan 1`, then `q`.
 
-Keyboard teleop (WASD / arrows move x and y, Q/E move z, and those translation keys leave orientation free. Z/C change base roll, F/V change base pitch, R rests, H homes, space toggles the gripper, Esc quits). Rerun shows the arm, joint angles, and end-effector pose. `--mock` moves that drawing and does not open the serial port.
+Keyboard teleop (WASD / arrows move x and y, Q/E move z, and those translation keys keep the current orientation. Z/C change base roll, F/V change base pitch, R rests, H homes, space toggles the gripper, Esc quits). Rerun shows the arm, joint angles, and end-effector pose. `--mock` moves that drawing and does not open the serial port.
 
 ```sh
 uv run python scripts/keyboard_control.py --mock

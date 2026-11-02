@@ -60,6 +60,18 @@ def test_move_to_continues_from_the_last_command_when_encoders_lag():
         assert abs(packets[0][f"{name}.pos"] - sent[name]) < abs(sent[name])
 
 
+def test_move_to_seeds_ik_from_the_last_command_without_a_read():
+    with SO101.connect(mock=True) as arm:
+        pose = arm.get_pose()
+        arm.move_to(pose.x + 0.005, pose.y, pose.z, wait=False)
+
+        def no_read():
+            raise AssertionError("move_to read the encoders to seed IK")
+
+        arm.get_joints = no_read
+        arm.move_to(pose.x + 0.010, pose.y, pose.z, wait=False)
+
+
 def test_move_to_changes_pitch_in_the_base_frame():
     with SO101.connect(mock=True) as arm:
         pose = arm.get_pose()

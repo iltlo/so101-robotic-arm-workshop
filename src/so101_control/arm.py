@@ -186,8 +186,8 @@ class SO101:
 
         x, y, z are metres of the tool point: `ee_tool_offset` along
         gripper_frame_link +Z. roll, pitch, yaw are base-frame degrees; pass all
-        three or none. Pitch +90 points the fingers straight down. None leaves
-        orientation free, unless `downward` points the fingers straight down.
+        three or none. Pitch +90 points the fingers straight down. None keeps the
+        current orientation, unless `downward` points the fingers straight down.
         Returns False when `cancel` stops the move.
         """
         point = (float(x), float(y), float(z))
@@ -196,10 +196,12 @@ class SO101:
             raise ValueError("roll, pitch, and yaw are one pose")
         rpy = None if roll is None else (float(roll), float(pitch), float(yaw))
         # Seed IK from the last command so a small step does not pick a new elbow
-        # while the encoders are still catching up.
-        state = self.get_joints()
+        # while the encoders are still catching up. Skip the read when it covers
+        # every joint; a keyboard nudge should not wait on the serial port.
         if self._sent and set(JOINTS) <= set(self._sent):
             state = {name: float(self._sent[name]) for name in JOINTS}
+        else:
+            state = self.get_joints()
         targets = self._kin.position_ik(
             state, point, self._limits, downward=downward, rpy=rpy)
         if self._on_target is not None:
@@ -212,9 +214,10 @@ class SO101:
         if (name not in JOINTS or not math.isfinite(delta) or delta == 0
                 or abs(delta) > MAX_JOINT_STEP_DEG):
             raise ValueError(f"Use an arm joint and a step of at most {MAX_JOINT_STEP_DEG:.0f} degrees")
-        base = self.get_joints()[name]
         if self._sent and name in self._sent:
             base = float(self._sent[name])
+        else:
+            base = self.get_joints()[name]
         self._move({name: base + delta})
 
     def home(self, *, wait: bool = True, cancel=None) -> bool:

@@ -114,6 +114,35 @@ def test_a_short_translation_stays_near_the_start(kin):
     assert np.linalg.norm(kin.tool_point(kin.fk(solved)) - target) < 0.015
 
 
+def test_repeated_x_steps_do_not_rotate_the_wrist(kin):
+    """Keyboard nudges translate. Position alone leaves five joints a null space."""
+    limits = validated_limits(load_robot())
+    state = {name: 0.0 for name in JOINTS}
+    previous = kin.ee_tool_offset
+    kin.ee_tool_offset = 0.020
+    try:
+        start = tool_rpy(kin.fk(state)[:3, :3])
+        for _ in range(5):
+            target = kin.tool_point(kin.fk(state)) + np.array([0.005, 0.0, 0.0])
+            state = kin.position_ik(state, target, limits)
+            assert tool_rpy(kin.fk(state)[:3, :3]) == pytest.approx(start, abs=0.5)
+            assert state["wrist_roll"] == pytest.approx(0.0, abs=0.5)
+    finally:
+        kin.ee_tool_offset = previous
+
+
+def test_downward_steps_keep_the_twist(kin):
+    """Fingers down still leaves the twist, so a sideway step must not spin the jaws."""
+    limits = validated_limits(load_robot())
+    state = kin.position_ik({name: 0.0 for name in JOINTS}, (0.28, -0.05, 0.04),
+                            limits, downward=True)
+    start = tool_rpy(kin.fk(state)[:3, :3])
+    for _ in range(4):
+        target = kin.tool_point(kin.fk(state)) + np.array([0.0, 0.005, 0.0])
+        state = kin.position_ik(state, target, limits, downward=True)
+        assert tool_rpy(kin.fk(state)[:3, :3]) == pytest.approx(start, abs=0.5)
+
+
 def test_ik_returns_to_a_known_tcp(kin):
     limits = validated_limits(load_robot())
     start = {name: 0.0 for name in JOINTS}
