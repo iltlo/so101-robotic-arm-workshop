@@ -1,0 +1,4 @@
+[submodule "rerun"]
+	path = rerun
+	url = https://github.com/iltlo/rerun.git
+	branch = feat/native-viewer-event-socket-0.41

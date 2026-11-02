@@ -1,7 +1,8 @@
-"""The Rerun views: arm twin, hand-eye view, and tag view. Shared layout and helpers."""
+"""The Rerun views: arm twin, hand-eye view, tag view, and camera clicks."""
 
 from contextlib import nullcontext
 from pathlib import Path
+from threading import Lock
 import time
 
 import numpy as np
@@ -20,7 +21,7 @@ _JOINT_COLORS = ((255, 94, 111), (255, 188, 92), (91, 197, 233),
 _EE_XYZ_COLORS = _JOINT_COLORS[:3]
 _EE_RPY_COLORS = ((169, 130, 255), (79, 207, 148), (255, 255, 255))
 _AXIS_COLORS = ((255, 70, 70), (70, 240, 110), (65, 140, 255))
-_CAMERA = "camera/rgb"
+CAMERA_ENTITY = "camera/rgb"
 
 _AXIS_RADIUS_M = 0.003
 _GOAL_AXIS_M = 0.07
@@ -61,7 +62,7 @@ def _pinhole_entity(rr, intrinsics):
 def _log_rgb(rr, image_bgr) -> None:
     import cv2
 
-    rr.log(_CAMERA, rr.Image(cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)))
+    rr.log(CAMERA_ENTITY, rr.Image(cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)))
 
 
 def _flush(rr) -> None:
@@ -84,7 +85,7 @@ def _arm_blueprint(rrb, root, *, intrinsics):
     if intrinsics is None:
         layout = rrb.Horizontal(arm_view, telemetry)
     else:
-        camera = rrb.Spatial2DView(name="Camera", origin=_CAMERA)
+        camera = rrb.Spatial2DView(name="Camera", origin=CAMERA_ENTITY)
         layout = rrb.Horizontal(rrb.Vertical(arm_view, camera), telemetry)
     return rrb.Blueprint(layout, auto_views=False)
 
@@ -93,7 +94,7 @@ class Twin:
     """One 3D view plus joint-angle and EE pose plots."""
 
     def __init__(self, urdf: str | Path, *, spawn: bool = True, recording: str | None = None,
-                 intrinsics=None):
+                 intrinsics=None, clicks: bool = False):
         import rerun as rr
         import rerun.blueprint as rrb
 
@@ -111,7 +112,15 @@ class Twin:
             raise ValueError("Follower URDF missing gripper jaw joint")
         self.tick = 0
         self.ee_tool_offset = None
-        rr.init("so101_control", spawn=spawn and recording is None)
+        self.clicks = None
+        if clicks and intrinsics is None:
+            raise ValueError("clicks=True needs camera intrinsics")
+        rr.init("so101_control", spawn=False)
+        if clicks:
+            self.clicks = CameraClicks(intrinsics.width, intrinsics.height)
+        if clicks or (spawn and recording is None):
+            # `rr.spawn` records image clicks. Read them with `rr.poll_image_click`.
+            rr.spawn(hide_welcome_screen=clicks)
         if recording is not None:
             rr.save(recording)
 
@@ -134,7 +143,7 @@ class Twin:
                 rr.log(f"telemetry/ee/{group}/{name}", rr.SeriesLines(names=name, colors=color), static=True)
 
         if intrinsics is not None:
-            rr.log(_CAMERA, _pinhole_entity(rr, intrinsics), static=True)
+            rr.log(CAMERA_ENTITY, _pinhole_entity(rr, intrinsics), static=True)
         blueprint = _arm_blueprint(rrb, robot_root, intrinsics=intrinsics)
         rr.send_blueprint(blueprint)
         if recording is not None:
@@ -222,6 +231,13 @@ class Twin:
         if self.intrinsics is None:
             raise RuntimeError("This twin was opened without a camera view")
         _log_rgb(self.rr, image_bgr)
+        if self.clicks is not None:
+            self.clicks.mark_ready()
+
+    def close(self) -> None:
+        """Stop listening for camera clicks, if enabled."""
+        if self.clicks is not None:
+            self.clicks.close()
 
     def flush(self) -> None:
         """Push the latest log data to the viewer now."""
@@ -233,9 +249,15 @@ class Twin:
         self.flush()
 
 
-def watch_arm(arm, urdf: str | Path, *, intrinsics=None) -> Twin:
-    """Open Rerun and redraw the arm after every motion step and goal."""
-    twin = Twin(urdf, intrinsics=intrinsics)
+def watch_arm(arm, urdf: str | Path, *, intrinsics=None, spawn: bool = True,
+              clicks: bool = False) -> Twin:
+    """Open Rerun and redraw the arm after every motion step and goal.
+
+    With `clicks=True`, expose camera pixels on `twin.clicks`
+    (`poll()`, `has_pending()`). Those come from `rr.poll_image_click`
+    after `rr.spawn`. `intrinsics` is then required.
+    """
+    twin = Twin(urdf, intrinsics=intrinsics, spawn=spawn, clicks=clicks)
     if arm.ee_tool_offset:
         twin.mark_ee_tool(arm.ee_tool_offset)
     arm.track(lambda: twin.show(arm))
@@ -359,11 +381,11 @@ class TagView:
         rr.log("camera", rr.ViewCoordinates.RDF, static=True)
         rr.log("camera/origin",
                 _frame_arrows(rr, np.eye(4), "camera", length=_CAMERA_AXIS_M), static=True)
-        rr.log(_CAMERA, _pinhole_entity(rr, intrinsics), static=True)
+        rr.log(CAMERA_ENTITY, _pinhole_entity(rr, intrinsics), static=True)
         rr.send_blueprint(rrb.Blueprint(rrb.Horizontal(
             rrb.Spatial3DView(name="Camera frame (metres)", origin="/camera"),
             rrb.Vertical(
-                rrb.Spatial2DView(name="RGB", origin=_CAMERA),
+                rrb.Spatial2DView(name="RGB", origin=CAMERA_ENTITY),
                 rrb.TextDocumentView(name="camera_T_tag", origin="/camera/pose_text"),
             ),
         ), auto_views=False))
@@ -393,3 +415,70 @@ class TagView:
         _log_rgb(self.rr, image)
         _flush(self.rr)
         return result
+
+
+# Camera clicks
+# ---------------------------------------------------------------------------
+
+# `rr.spawn` records clicks. This gate ignores any that arrive before the
+# camera image is on screen.
+
+_READY_MESSAGE = "Camera image is ready. Click it in the Camera view."
+
+
+class CameraClicks:
+    """Camera-image clicks from `rr.poll_image_click`, as `(x, y)` pixels.
+
+    `watch_arm(..., clicks=True)` creates one and exposes it as `twin.clicks`.
+    `poll` returns the latest click since the last call, or None.
+    """
+
+    def __init__(self, width: int, height: int, *, entity: str = CAMERA_ENTITY):
+        self.width, self.height = int(width), int(height)
+        self._entity = entity
+        self._lock = Lock()
+        self._ready = False
+
+    def mark_ready(self) -> None:
+        """Note that the camera image is on screen; earlier clicks are ignored."""
+        import rerun as rr
+
+        with self._lock:
+            if self._ready:
+                return
+        rr.poll_image_click(self._entity, width=self.width, height=self.height)
+        with self._lock:
+            if self._ready:
+                return
+            self._ready = True
+        print(_READY_MESSAGE, flush=True)
+
+    def poll(self) -> tuple[int, int] | None:
+        """The latest click, or None. Older clicks are dropped."""
+        import rerun as rr
+
+        click = rr.poll_image_click(self._entity, width=self.width, height=self.height)
+        with self._lock:
+            ready = self._ready
+        if not ready:
+            if click is not None:
+                print("Camera image is not ready.", flush=True)
+            return None
+        if click is not None:
+            print(f"Queued {click}", flush=True)
+        return click
+
+    def has_pending(self) -> bool:
+        """Whether a click is waiting for `poll`."""
+        import rerun as rr
+
+        with self._lock:
+            ready = self._ready
+        if not ready:
+            rr.poll_image_click(self._entity, width=self.width, height=self.height)
+            return False
+        return rr.has_image_click(self._entity, width=self.width, height=self.height)
+
+    def close(self) -> None:
+        """Clicks stay with the spawned viewer until the process exits."""
+        return None

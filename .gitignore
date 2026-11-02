@@ -1,4 +1,4 @@
-# Vendored third-party checkouts.
+# Vendored third-party checkouts. The Rerun fork is the `rerun` submodule at the repo root.
 reference/
 
 # Python and uv-generated environments (uv uses .venv by default unless
@@ -6,6 +6,9 @@ reference/
 .venv/
 .venv-*/
 .uv-so101/
+
+# Local caches.
+.cache/
 
 # Build, cache and test outputs.
 __pycache__/

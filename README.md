@@ -133,7 +133,17 @@ uv run python calibration/auto_hand_eye.py --mock
 
 A click is a ray through that pixel. It hits the base-link plane **z = 0**. The arm starts at the rest pose, then moves the gripper frame (tool offset 0) to that point plus `HOVER_M` (0.02 m) along +Z. Depth is not used.
 
-Rerun shows the arm, joint angles, end-effector pose, and the camera image together. `--mock` moves the drawn arm. The click itself is on the printed browser page: this Rerun version does not report image clicks back to the script.
+Rerun shows the arm, joint angles, end-effector pose, and the camera image together. `--mock` moves the drawn arm. Click the **Camera** panel in the native viewer. `watch_arm(..., clicks=True)` exposes those picks as `twin.clicks` (`poll()`, `has_pending()`). The pixel itself is `rr.poll_image_click("camera/rgb")` from the Rerun fork in `rerun` (https://github.com/iltlo/rerun). `rr.spawn()` records the click; the script does not open a port or a socket.
+
+Build that fork once (Rust 1.98 or newer) and install its SDK into this environment. The wheel includes the viewer, so `rr.spawn()` finds it:
+
+```sh
+cd rerun
+cargo build -p rerun-cli --no-default-features --features native_viewer --release
+uvx maturin build --release -m rerun_py/Cargo.toml -o /tmp/rerun-sdk
+cd ..
+uv pip install --reinstall /tmp/rerun-sdk/rerun_sdk-0.41.0-*.whl
+```
 
 ```sh
 uv run python application/click_and_go.py --mock

@@ -16,25 +16,21 @@ def frame_viewer(arm, twin):
     return show
 
 
-def read_frame(cam, view, show):
-    """Read one frame, publish it to the page, show it, and return it."""
+def read_frame(cam, show):
+    """Read one frame, show it, and return it."""
     frame = cam.read()
-    view.publish(frame.rgb_bgr)
     show(frame)
     return frame
 
 
-def attach_camera(arm, cam, view, show) -> None:
-    """Publish the camera during moves, and one frame before returning."""
+def attach_camera(arm, cam, show) -> None:
+    """Log the camera during moves, and one frame before returning."""
 
     def paint() -> None:
-        frame = cam.poll()
-        if frame is not None:
-            view.publish(frame.rgb_bgr)
-        show(frame)
+        show(cam.poll())
 
     arm.track(paint)
-    read_frame(cam, view, show)
+    read_frame(cam, show)
 
 
 def click_target(click, intrinsics, base_T_camera, height_m) -> np.ndarray:
