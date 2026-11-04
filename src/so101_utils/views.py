@@ -1,4 +1,4 @@
-"""The Rerun views: arm twin, hand-eye view, and tag view. Shared layout and helpers."""
+"""The Rerun views: arm twin, hand-eye, tag, and chessboard. Shared layout and helpers."""
 
 from contextlib import nullcontext
 from pathlib import Path
@@ -340,6 +340,25 @@ def _format_pose(pose, tag: Tag) -> str:
             "Camera frame: +X right, +Y down, +Z forward\n"
             f"Tag origin (metres): X={x:.4f}, Y={y:.4f}, Z={z:.4f}\n"
             f"camera_T_tag:\n{rows}")
+
+
+class ChessboardView:
+    """One RGB image for chessboard calibration. The arm is not involved."""
+
+    def __init__(self, *, spawn=True):
+        import rerun as rr
+        import rerun.blueprint as rrb
+
+        self.rr = rr
+        rr.init("SO-101 intrinsics", spawn=spawn)
+        rr.send_blueprint(rrb.Blueprint(
+            rrb.Spatial2DView(name="Chessboard", origin=_CAMERA),
+            auto_views=False,
+        ))
+
+    def update(self, image_bgr) -> None:
+        _log_rgb(self.rr, image_bgr)
+        _flush(self.rr)
 
 
 class TagView:

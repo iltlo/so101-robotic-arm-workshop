@@ -11,6 +11,7 @@ A short path from a fresh checkout to moving the follower. Distances are **metre
 - [x] Joint jog (`scripts/joint_jog.py`)
 - [x] Keyboard teleop (`scripts/keyboard_control.py`)
 - [x] AprilTag in the camera frame (`calibration/apriltag.py`)
+- [x] Chessboard intrinsics (`calibration/intrinsics.py`)
 - [x] Eye-to-hand calibration (`calibration/hand_eye.py`)
 - [x] Click-and-go on the base plane z = 0 (`application/click_and_go.py`)
 - [x] Click and pick: pick at the click, release at rest (`application/click_and_pick.py`)
@@ -98,12 +99,30 @@ uv run python scripts/keyboard_control.py --mock
 uv run python scripts/keyboard_control.py --live
 ```
 
+## Camera view
+
+The live picture only, in Rerun. Q quits. `calibration/intrinsics.py` searches every frame for the chessboard, so that view updates more slowly.
+
+```sh
+uv run python scripts/camera_view.py
+```
+
 ## 6. AprilTag
 
 Camera only. No arm. The tag is tag36h11, id 0, 40 mm black-square edge, as set in the `tag:` section of `config/robot.yaml`. Ctrl-C stops.
 
 ```sh
 uv run python calibration/apriltag.py
+```
+
+## Chessboard intrinsics
+
+Run this before hand-eye. The webcam and the reCamera do not report fx, fy, or distortion. The lab board has 8 × 11 inner corners (9 × 12 squares). Square size is not needed. Hold the board in view, move it between captures (tilt it, and use different parts of the image), and take at least ten views.
+
+**Space** captures the current view. **Enter** solves and writes `config/camera.yaml`. **Q** quits. The fit is Brown-Conrady, so later rays use OpenCV undistortion.
+
+```sh
+uv run python calibration/intrinsics.py
 ```
 
 ## 7. Hand-eye
@@ -164,10 +183,12 @@ uv run python application/pick_and_place.py --live
 
 ## Config
 
+The default camera is the webcam in `config/camera.yaml` (`backend: webcamera`). `device` is the camera index: `/dev/videoN` on Linux, DirectShow on Windows, and AVFoundation on macOS. Set `backend: recamera` for the reCamera RTSP stream (`url`), or `backend: realsense` for a RealSense, and set `width`, `height`, and `fps` to a mode that camera supports. The webcam `fx` and `fy` are placeholders until you run `calibration/intrinsics.py`, and `config/hand_eye.yaml` is still the RealSense pose. Measure the intrinsics, then rerun `calibration/hand_eye.py`, before any live click.
+
 | File | What you edit |
 | --- | --- |
 | `config/robot.yaml` | port, arm id, URDF, joint limits, joint offsets, tag family/id/size and mount |
-| `config/camera.yaml` | resolution, fps, intrinsics, distortion |
+| `config/camera.yaml` | backend (`webcamera`, `recamera`, or `realsense`), device, url, resolution, fps, intrinsics, distortion |
 | `config/hand_eye.yaml` | `base_T_camera`, written by the calibration script |
 
 ## Using the arm from Python

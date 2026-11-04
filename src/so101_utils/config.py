@@ -119,7 +119,7 @@ def save_camera_intrinsics(intr: Intrinsics, *, serial=None) -> None:
         "distortion": [float(v) for v in intr.distortion],
         "distortion_model": intr.distortion_model,
     }
-    path.write_text("# RGB camera. Intrinsics are updated by calibration/hand_eye.py.\n"
+    path.write_text("# RGB camera. Chessboard intrinsics are written by calibration/intrinsics.py.\n"
                     + yaml.safe_dump(current, sort_keys=False))
 
 

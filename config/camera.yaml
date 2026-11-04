@@ -1,17 +1,20 @@
-# RGB camera. Intrinsics are updated by calibration/hand_eye.py.
+# RGB camera. Chessboard intrinsics are written by calibration/intrinsics.py.
+backend: webcamera
+device: 0
+url: rtsp://admin:admin@192.168.42.1:554/live
 serial: null
-width: 640
-height: 480
+width: 1280
+height: 720
 fps: 30
 intrinsics:
-  fx: 606.9544677734375
-  fy: 607.1199951171875
-  cx: 331.04522705078125
-  cy: 248.32534790039062
+  fx: 1421.9603421676707
+  fy: 1421.440722507306
+  cx: 623.0756651086508
+  cy: 358.594869293321
   distortion:
-  - 0.0
-  - 0.0
-  - 0.0
-  - 0.0
-  - 0.0
-  distortion_model: inverse_brown_conrady
+  - 0.013234271975415086
+  - 0.9240195490905184
+  - 0.0005318922502983329
+  - -0.0018219859473732943
+  - -3.073890722577964
+  distortion_model: brown_conrady
