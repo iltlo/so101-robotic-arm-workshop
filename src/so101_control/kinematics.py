@@ -69,7 +69,7 @@ class Kinematics:
         self._client = p.connect(p.DIRECT)
         try:
             # Meshes are not part of the frame. Leave the fixed gripper_frame_joint
-            # unmerged so its rpy stays the gripper frame PlaCo reported.
+            # unmerged so its rpy stays the gripper frame in the URDF.
             flags = (p.URDF_MAINTAIN_LINK_ORDER | p.URDF_IGNORE_VISUAL_SHAPES
                      | p.URDF_IGNORE_COLLISION_SHAPES)
             self._body = p.loadURDF(

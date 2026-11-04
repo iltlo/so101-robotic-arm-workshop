@@ -9,18 +9,19 @@ import pytest
 from scipy.spatial.transform import Rotation
 
 from so101_control.arm import SO101
-from so101_control.kinematics import NEAR_STEP_DEG, Kinematics, _fingers_down
+from so101_control.kinematics import NEAR_STEP_DEG, Kinematics
 from so101_utils.config import load_robot, validated_limits
 from so101_utils.model import JOINTS, gripper_rotation_from_rpy, tool_rpy
-from so101_utils.transforms import transform
 
-# PyBullet and PlaCo read this URDF's link frames. The gap on the samples below
-# is about 1e-8 m and 1e-5 deg; these bounds are that rounding, not a frame change.
+# Recorded from PlaCo before that extra was removed. The live gap was about
+# 1e-8 m and 1e-5 deg; these bounds are that rounding, not a frame change.
 FK_POSITION_TOL_M = 1e-5
 FK_ROTATION_TOL_DEG = 1e-4
-# Converged PlaCo IK on the same seed and 4x4. The widest gap is 15 deg at the
-# elbow on the downward click target. An elbow flip sits well outside this.
-IK_JOINT_TOL_DEG = 18.0
+# Joint answers recorded from this PyBullet solver. A later change that picks
+# another configuration, such as an elbow flip, fails this. The 5 mm step was
+# within 7 deg of converged PlaCo, and the downward click within 11 deg.
+# PlaCo's soft solve of the known pose left that family (about 42 deg at the lift).
+IK_JOINT_TOL_DEG = 0.2
 
 URDF = Path(__file__).parents[1] / "assets/SO101/so101_new_calib.urdf"
 
@@ -242,46 +243,70 @@ def _rotation_error_deg(left, right) -> float:
     return float(np.rad2deg(delta))
 
 
-def _placo():
-    from lerobot.model import RobotKinematics
-
-    return RobotKinematics(
-        urdf_path=str(URDF), target_frame_name="gripper_frame_link", joint_names=list(JOINTS))
-
-
-def _converged_placo(solver, seed, pose) -> np.ndarray:
-    """One PlaCo solve step does not reach. Repeat it from the same seed."""
-    joints = np.array([seed[name] for name in JOINTS], dtype=float)
-    for _ in range(30):
-        joints = np.asarray(solver.inverse_kinematics(
-            joints, pose, position_weight=1.0, orientation_weight=1.0), dtype=float)
-    return joints
-
-
-def test_fk_matches_placo(kin):
-    placo = _placo()
-    configs = (
+# gripper_frame_link, then gripper_link, recorded from PlaCo on this URDF.
+_RECORDED_POSES = (
+    (
         {name: 0.0 for name in JOINTS},
+        np.array([
+            [1.0, -0.00001030, -0.00000234, 0.39136147],
+            [0.00001017, 0.99881526, -0.04866293, -0.00000921],
+            [0.00000284, 0.04866293, 0.99881526, 0.22646971],
+            [0.0, 0.0, 0.0, 1.0],
+        ]),
+        np.array([
+            [-0.00000601, -0.00001030, -1.0, 0.29323402],
+            [-0.04866293, 0.99881526, -0.00001000, -0.00017677],
+            [0.99881526, 0.04866293, -0.00000651, 0.23437033],
+            [0.0, 0.0, 0.0, 1.0],
+        ]),
+    ),
+    (
         {"shoulder_pan": 90.0, "shoulder_lift": -40.0, "elbow_flex": 50.0,
          "wrist_flex": -30.0, "wrist_roll": 20.0},
+        np.array([
+            [0.00000853, 0.95522288, 0.29588721, 0.03611355],
+            [-0.93969250, -0.10119183, 0.32670815, -0.26542692],
+            [0.34202047, -0.27804578, 0.89761492, 0.24995594],
+            [0.0, 0.0, 0.0, 1.0],
+        ]),
+        np.array([
+            [0.29588721, 0.95522288, -0.00000961, 0.03865847],
+            [0.32671160, -0.10119183, 0.93969130, -0.17065851],
+            [0.89761366, -0.27804578, -0.34202376, 0.22342454],
+            [0.0, 0.0, 0.0, 1.0],
+        ]),
+    ),
+    (
         {"shoulder_pan": -60.0, "shoulder_lift": 0.0, "elbow_flex": 0.0,
          "wrist_flex": 80.0, "wrist_roll": 15.0},
-    )
-    for joints in configs:
-        angles = np.array([joints[name] for name in JOINTS], dtype=float)
-        theirs = transform(placo.forward_kinematics(angles))
+        np.array([
+            [0.08682207, -0.95058286, 0.29808415, 0.14731489],
+            [0.15039083, 0.30829123, 0.93932908, 0.18377148],
+            [-0.98480685, -0.03672537, 0.16972543, 0.07622953],
+            [0.0, 0.0, 0.0, 1.0],
+        ]),
+        np.array([
+            [0.29808383, -0.95058286, -0.08682316, 0.14094268],
+            [0.93932853, 0.30829123, -0.15039428, 0.17650162],
+            [0.16972904, -0.03672537, 0.98480622, 0.17419886],
+            [0.0, 0.0, 0.0, 1.0],
+        ]),
+    ),
+)
+
+
+def test_fk_matches_the_recorded_frames(kin):
+    for joints, frame, link in _RECORDED_POSES:
         ours = kin.fk(joints)
-        assert np.linalg.norm(ours[:3, 3] - theirs[:3, 3]) < FK_POSITION_TOL_M
-        assert _rotation_error_deg(ours, theirs) < FK_ROTATION_TOL_DEG
-        link = kin.fk_gripper_link(joints)
-        placo_link = transform(placo.robot.get_T_world_frame("gripper_link"))
-        assert np.linalg.norm(link[:3, 3] - placo_link[:3, 3]) < FK_POSITION_TOL_M
-        assert _rotation_error_deg(link, placo_link) < FK_ROTATION_TOL_DEG
+        assert np.linalg.norm(ours[:3, 3] - frame[:3, 3]) < FK_POSITION_TOL_M
+        assert _rotation_error_deg(ours, frame) < FK_ROTATION_TOL_DEG
+        got = kin.fk_gripper_link(joints)
+        assert np.linalg.norm(got[:3, 3] - link[:3, 3]) < FK_POSITION_TOL_M
+        assert _rotation_error_deg(got, link) < FK_ROTATION_TOL_DEG
 
 
-def test_ik_stays_in_the_placo_configuration(kin):
-    """Same seeds PlaCo gets: a reachable pose, a 5 mm step, and a downward click."""
-    placo = _placo()
+def test_ik_stays_near_the_recorded_configuration(kin):
+    """A reachable pose, a 5 mm step, and a downward click, against recorded joints."""
     limits = validated_limits(load_robot())
     previous = kin.ee_tool_offset
     kin.ee_tool_offset = 0.0
@@ -294,31 +319,29 @@ def test_ik_stays_in_the_placo_configuration(kin):
         matrix = kin.fk(goal)
         rpy = tool_rpy(matrix[:3, :3])
         cases = [(
-            seed, kin.tool_point(matrix), gripper_rotation_from_rpy(rpy),
+            seed, kin.tool_point(matrix),
             {"rpy": tuple(float(angle) for angle in rpy)},
+            np.array([14.9980, 0.5335, -1.2774, -19.2381, 24.9915]),
         )]
         start = {
             "shoulder_pan": 0.0, "shoulder_lift": -90.0, "elbow_flex": 90.0,
             "wrist_flex": 45.0, "wrist_roll": 0.0,
         }
         pose = kin.fk(start)
-        cases.append((start, kin.tool_point(pose) + np.array([0.005, 0.0, 0.0]), pose[:3, :3], {}))
-        home = kin.fk(seed)
-        down = np.array([0.28, -0.05, 0.04])
-        cases.append((seed, down, _fingers_down(home[:3, :3]), {"downward": True}))
-
-        for joints, target, rotation, options in cases:
+        cases.append((
+            start, kin.tool_point(pose) + np.array([0.005, 0.0, 0.0]), {},
+            np.array([0.0, -87.8258, 89.5194, 43.2864, 0.0]),
+        ))
+        cases.append((
+            seed, np.array([0.28, -0.05, 0.04]), {"downward": True},
+            np.array([11.2604, 30.3480, -26.8648, 86.4439, 14.0504]),
+        ))
+        for joints, target, options, reference in cases:
             solved = kin.position_ik(joints, target, limits, **options)
             reached = kin.fk(solved)
             assert np.linalg.norm(kin.tool_point(reached) - target) < 0.015
             if options.get("downward"):
                 assert reached[2, 0] < -0.95
-            goal_pose = np.eye(4)
-            goal_pose[:3, :3] = rotation
-            goal_pose[:3, 3] = target
-            reference = _converged_placo(placo, joints, goal_pose)
-            reference_pose = transform(placo.forward_kinematics(reference))
-            assert np.linalg.norm(reference_pose[:3, 3] - target) < 0.015
             delta = [abs(solved[name] - reference[index]) for index, name in enumerate(JOINTS)]
             assert max(delta) <= IK_JOINT_TOL_DEG
     finally:
