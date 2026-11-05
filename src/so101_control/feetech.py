@@ -241,10 +241,9 @@ class SdkLink:
             result = writer.txPacket()
             if result != self._ok:
                 raise RuntimeError(self.packet.getTxRxResult(result))
+            writer.clearParam()
 
         self._call(run)
-            raise RuntimeError(self.packet.getTxRxResult(result))
-        writer.clearParam()
 
 
 class FeetechBus:

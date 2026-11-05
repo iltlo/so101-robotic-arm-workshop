@@ -1,0 +1,26 @@
+# Follower USB port, calibrated joint limits (degrees), and small zero corrections.
+# 0° is the midpoint from motor calibration. Offsets are added to feedback and
+# subtracted from goals so the kinematics match this arm.
+port: ""
+arm_id: workshop_follower
+urdf: assets/SO101/so101_new_calib.urdf
+joint_limits_deg:
+  shoulder_pan: [-119.16, 119.16]
+  shoulder_lift: [-108.83, 100.83]
+  elbow_flex: [-104.62, 100.62]
+  wrist_flex: [-104.69, 102.69]
+  wrist_roll: [-180.0, 180.0]
+joint_offsets_deg:
+  shoulder_pan: 0.0
+  shoulder_lift: -4.0
+  elbow_flex: -7.0
+  wrist_flex: -1.0
+  wrist_roll: 0.0
+# AprilTag on gripper_link. Metres, then Ry and Rz about gripper_link axes.
+tag:
+  family: tag36h11
+  id: 0
+  size_m: 0.04
+  mount_xyz_m: [-0.0372, 0.0, -0.0284]
+  mount_ry_deg: 90.0
+  mount_rz_deg: 180.0

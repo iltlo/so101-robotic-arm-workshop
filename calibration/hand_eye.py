@@ -7,25 +7,15 @@ off/on, Enter record, C average and save, Q quit. Support the arm before T.
 Saves config/hand_eye.yaml and refreshes config/camera.yaml intrinsics.
 """
 
-import time
-
 import numpy as np
 
 from so101_control import SO101
 from so101_utils.camera import open_camera
 from so101_utils.config import load_robot, save_camera_intrinsics, save_hand_eye
+from so101_utils.hand_eye_flow import record_sample
 from so101_utils.keys import keyboard
-from so101_utils.transforms import Sample, solve_eye_to_hand
+from so101_utils.transforms import solve_eye_to_hand
 from so101_utils.views import HandEyeView
-
-
-# Joints must hold this close across a short wait before a sample counts.
-SETTLE_DEG = 0.3
-SETTLE_WAIT_S = 0.25
-
-
-def _settled(before, after, limit=SETTLE_DEG) -> bool:
-    return max(abs(before[name] - after[name]) for name in before) <= limit
 
 
 if __name__ == "__main__":
@@ -67,25 +57,16 @@ if __name__ == "__main__":
                     continue
                 if command != "enter":
                     continue
-                if not arm.torque_on:
-                    print("Turn torque on, let the arm settle, then press Enter.")
+                try:
+                    sample = record_sample(
+                        arm, camera_T_tag,
+                        lambda: view.update(cam.read(), arm, estimate),
+                    )
+                except ValueError as exc:
+                    print(exc)
                     continue
-                if camera_T_tag is None:
-                    print("No tag in view.")
-                    continue
-                before = arm.get_joints()
-                time.sleep(SETTLE_WAIT_S)
-                after = arm.get_joints()
-                if not _settled(before, after):
-                    print("Arm moved. Wait and try again.")
-                    continue
-                again = view.update(cam.read(), arm, estimate)
-                if again is None or not _settled(after, arm.get_joints()):
-                    print("Tag or arm moved during capture.")
-                    continue
-                base_T_gripper = arm.gripper_link_pose()
-                samples.append(Sample(base_T_gripper, again))
+                samples.append(sample)
                 # One-pose preview. C averages the whole set.
-                estimate = base_T_gripper @ tag.gripper_T_tag @ np.linalg.inv(again)
+                estimate = sample.base_T_gripper @ tag.gripper_T_tag @ np.linalg.inv(sample.camera_T_tag)
                 saved = False
                 print(f"Captured {len(samples)}. Press C once you have at least 4 varied poses.")

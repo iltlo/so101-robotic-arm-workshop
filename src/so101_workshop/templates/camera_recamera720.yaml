@@ -1,0 +1,20 @@
+# RGB camera. Chessboard intrinsics are written by calibration/intrinsics.py.
+backend: recamera
+device: 0
+url: ws://192.168.42.1:8090/ws/boxes
+serial: null
+width: 1280
+height: 720
+fps: 30
+intrinsics:
+  fx: 711.5092004623941
+  fy: 711.3743771415272
+  cx: 620.6502781330901
+  cy: 362.7256907643179
+  distortion:
+  - 0.010341107863420242
+  - -0.02562309794120481
+  - -0.0016530764007785415
+  - -0.0015990497262017287
+  - 0.010520941664469515
+  distortion_model: brown_conrady

@@ -1,8 +1,13 @@
-"""RGB capture from a webcam, a reCamera websocket, or a RealSense. Depth is not used."""
+"""RGB capture from a webcam, a reCamera websocket, a RealSense, or a demo scene.
+
+Depth is not used.
+"""
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+import math
 import os
+from pathlib import Path
 import sys
 import threading
 import time
@@ -40,10 +45,25 @@ class Frame:
         return self.image
 
 
+BACKENDS = ("recamera", "webcamera", "realsense", "demo")
+
+
+def list_video_devices() -> list[int]:
+    """Video indices the OS exposes. Windows and macOS use the index directly."""
+    if not sys.platform.startswith("linux"):
+        return []
+    found = []
+    for path in Path("/dev").glob("video*"):
+        suffix = path.name.removeprefix("video")
+        if suffix.isdigit():
+            found.append(int(suffix))
+    return sorted(found)
+
+
 def camera_backend(cfg: dict) -> str:
-    """`webcamera`, `recamera`, or `realsense`. A missing backend is the webcam."""
+    """`webcamera`, `recamera`, `realsense`, or `demo`. A missing backend is the webcam."""
     backend = str(cfg.get("backend") or DEFAULT_BACKEND)
-    if backend not in ("webcamera", "recamera", "realsense"):
+    if backend not in BACKENDS:
         raise ValueError(f"Unknown camera backend {backend}")
     return backend
 
@@ -93,12 +113,17 @@ class Recamera:
     and skips the socket; tests use it.
     """
 
-    def __init__(self, url: str, intrinsics: Intrinsics, *, frames=None, timeout: float = 10.0):
+    def __init__(self, url: str, intrinsics: Intrinsics, *, frames=None, timeout: float = 10.0,
+                 on_payload=None):
         self.url = recamera_ws_url(url)
         self.intrinsics = intrinsics
         intrinsics.matrix()
         self._timeout = timeout
         self._frames = frames
+        # The supervisor message carries the JPEG and, when the on-device model
+        # runs, the YOLO boxes. One socket feeds both so the agent is still the
+        # only camera client.
+        self._on_payload = on_payload
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._ready = threading.Condition(self._lock)
@@ -199,6 +224,11 @@ class Recamera:
                             raw = ws.recv(timeout=_RECV_TIMEOUT_S)
                         except TimeoutError:
                             continue
+                        if self._on_payload is not None:
+                            try:
+                                self._on_payload(raw)
+                            except Exception:
+                                pass
                         image = _image_from_recamera_message(raw)
                         if image is None:
                             continue
@@ -458,6 +488,80 @@ class WebCamera:
             raise RuntimeError("Webcam closed")
 
 
+class DemoCamera:
+    """Synthetic tabletop frames. Lets the page be exercised without a camera.
+
+    The image is not a calibration target and its intrinsics are whatever the
+    active profile says. It is for trying the UI and the mock arm.
+    """
+
+    def __init__(self, intrinsics: Intrinsics, *, width=None, height=None, fps=30):
+        self.intrinsics = intrinsics
+        intrinsics.matrix()
+        self.width = int(width or intrinsics.width)
+        self.height = int(height or intrinsics.height)
+        self.fps = max(1, int(fps))
+        self._stop = threading.Event()
+        self._next = 0.0
+        self._started = time.monotonic()
+
+    def poll(self) -> Frame | None:
+        if self._stop.is_set():
+            return None
+        now = time.monotonic()
+        if now < self._next:
+            return None
+        self._next = now + 1.0 / self.fps
+        return Frame(self._render(now), now)
+
+    def read(self) -> Frame:
+        deadline = time.monotonic() + FRAME_TIMEOUT_MS / 1000
+        while time.monotonic() < deadline:
+            frame = self.poll()
+            if frame is not None:
+                return frame
+            time.sleep(0.005)
+        raise RuntimeError("No demo frame")
+
+    def close(self) -> None:
+        self._stop.set()
+
+    def _render(self, now: float) -> np.ndarray:
+        import cv2
+
+        width, height = self.width, self.height
+        image = np.zeros((height, width, 3), np.uint8)
+        top = np.array([58, 62, 66], np.float32)
+        bottom = np.array([22, 24, 27], np.float32)
+        ramp = np.linspace(0.0, 1.0, height, dtype=np.float32)[:, None, None]
+        image[:] = np.clip(top * (1.0 - ramp) + bottom * ramp, 0, 255).astype(np.uint8)
+        step = max(40, width // 20)
+        for x in range(0, width, step):
+            cv2.line(image, (x, height // 2), (x, height), (40, 46, 52), 1)
+        for y in range(height // 2, height, step):
+            cv2.line(image, (0, y), (width, y), (40, 46, 52), 1)
+        # Three "objects" on the table for the pick panels to describe.
+        scale = width / 1280.0
+        objects = (
+            (int(360 * scale), int(520 * scale), (60, 150, 240), "cube"),
+            (int(620 * scale), int(560 * scale), (120, 210, 120), "cup"),
+            (int(880 * scale), int(500 * scale), (230, 160, 80), "block"),
+        )
+        for cx, cy, color, label in objects:
+            half = int(42 * scale)
+            cv2.rectangle(image, (cx - half, cy - half), (cx + half, cy + half), color, -1)
+            cv2.putText(image, label, (cx - half, cy + half + int(26 * scale)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7 * scale, (220, 226, 232),
+                        max(1, int(2 * scale)), cv2.LINE_AA)
+        sweep = (math.sin((now - self._started) * 1.4) + 1.0) / 2.0
+        x = int(width * (0.1 + 0.8 * sweep))
+        cv2.circle(image, (x, int(height * 0.2)), int(14 * scale), (80, 220, 140), -1)
+        cv2.putText(image, "SO-101 demo camera", (int(24 * scale), int(44 * scale)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9 * scale, (235, 240, 245),
+                    max(1, int(2 * scale)), cv2.LINE_AA)
+        return image
+
+
 class RGBRealSense:
     def __init__(self, *, serial=None, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT, fps=DEFAULT_FPS):
         import pyrealsense2 as rs
@@ -507,11 +611,15 @@ class RGBRealSense:
 
 
 @contextmanager
-def open_camera():
-    """Open the camera described in config/camera.yaml."""
-    cfg = load_camera()
+def open_camera(cfg: dict | None = None, *, on_payload=None):
+    """Open the camera in `cfg`, or the active config/camera.yaml."""
+    cfg = load_camera() if cfg is None else cfg
     backend = camera_backend(cfg)
-    if backend == "webcamera":
+    if backend == "demo":
+        cam = DemoCamera(
+            cfg["intrinsics"], width=cfg["width"], height=cfg["height"], fps=int(cfg["fps"]),
+        )
+    elif backend == "webcamera":
         device = cfg.get("device")
         if device is None or device == "":
             raise ValueError("camera.yaml backend webcamera needs a device")
@@ -523,7 +631,7 @@ def open_camera():
         url = cfg.get("url")
         if not url:
             raise ValueError("camera.yaml backend recamera needs a url")
-        cam = Recamera(str(url), cfg["intrinsics"])
+        cam = Recamera(str(url), cfg["intrinsics"], on_payload=on_payload)
     else:
         serial = cfg.get("serial") or None
         cam = RGBRealSense(

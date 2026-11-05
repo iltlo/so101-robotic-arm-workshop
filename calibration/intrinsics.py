@@ -12,16 +12,16 @@ from so101_utils.camera import open_camera
 from so101_utils.config import save_camera_intrinsics
 from so101_utils.intrinsics import (
     INNER_CORNERS,
-    chessboard_object,
+    WORKSHOP_MIN_VIEWS,
+    capture_chessboard,
     draw_chessboard,
     find_chessboard,
-    solve_intrinsics,
+    solve_captured,
 )
 from so101_utils.keys import keyboard
 from so101_utils.views import ChessboardView
 
-# Ten tilted views is the usual minimum for a usable Brown-Conrady fit.
-MIN_VIEWS = 10
+MIN_VIEWS = WORKSHOP_MIN_VIEWS
 # Rerun at 1920x1080 filled its log and made the picture late.
 _PREVIEW_WIDTH = 960
 
@@ -54,24 +54,18 @@ if __name__ == "__main__":
                 print("Saved." if saved else f"Quit. Discarded {count} views.")
                 break
             if command == "space":
-                if corners is None:
-                    print("No chessboard in this frame.")
+                try:
+                    samples.append(capture_chessboard(frame))
+                except ValueError as exc:
+                    print(exc)
                     continue
-                samples.append((chessboard_object(pattern), corners.copy()))
                 print(f"Captured {len(samples)} views.")
                 continue
             if command != "enter":
                 continue
-            if len(samples) < MIN_VIEWS:
-                print(f"Need {MIN_VIEWS} views, have {len(samples)}.")
-                continue
             height, width = frame.shape[:2]
             try:
-                intr, rms = solve_intrinsics(
-                    [item[0] for item in samples],
-                    [item[1] for item in samples],
-                    (width, height),
-                )
+                intr, rms = solve_captured(samples, (width, height), minimum=MIN_VIEWS)
             except (ValueError, RuntimeError, cv2.error) as exc:
                 print(f"Calibration failed: {exc}")
                 continue

@@ -72,6 +72,28 @@ def test_move_to_seeds_ik_from_the_last_command_without_a_read():
         arm.move_to(pose.x + 0.010, pose.y, pose.z, wait=False)
 
 
+def test_torque_off_forgets_the_last_command():
+    with SO101.connect(mock=True) as arm:
+        arm.move_joint("shoulder_pan", 1.0)
+        assert arm._sent is not None
+        arm.relax()
+        assert arm._sent is None
+        assert arm._goal is None
+        # The arm moves while torque is off, so the next step must start there.
+        arm._backend.positions["shoulder_pan.pos"] = 20.0
+        arm.hold()
+        packets = []
+        send = arm._backend.send_action
+
+        def spy(action):
+            packets.append(dict(action))
+            return send(action)
+
+        arm._backend.send_action = spy
+        arm.move_joint("shoulder_pan", 1.0)
+        assert packets[0]["shoulder_pan.pos"] == pytest.approx(21.0)
+
+
 def test_move_to_changes_pitch_in_the_base_frame():
     with SO101.connect(mock=True) as arm:
         pose = arm.get_pose()

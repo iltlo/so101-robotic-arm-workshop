@@ -32,6 +32,10 @@ _CAMERA_AXIS_M = 0.04
 _TOOL_POINT_RADIUS_M = 0.007
 _TOOL_LINE_RADIUS_M = 0.0015
 _LIVE_PERIOD_S = 0.1
+# The plots follow the newest sample at their right edge. Without a window the
+# view is sized to the whole session and the curve appears to start midway.
+_PLOT_WINDOW_TICKS = 400
+_PLOT_WINDOW_S = 60.0
 
 # Five synthetic poses for scripts/twin.py --mock.
 _DEMO_POSES = ({}, {"shoulder_pan": 25.0}, {"elbow_flex": -20.0},
@@ -68,32 +72,57 @@ def _flush(rr) -> None:
     rr.get_global_data_recording().flush(timeout_sec=0)
 
 
+def _plot_ranges(rrb):
+    """Right-anchored windows for the sequence tick and wall-clock timelines."""
+    return [
+        rrb.VisibleTimeRange(
+            "tick",
+            start=rrb.TimeRangeBoundary.cursor_relative(seq=-_PLOT_WINDOW_TICKS),
+            end=rrb.TimeRangeBoundary.cursor_relative(),
+        ),
+        rrb.VisibleTimeRange(
+            "log_time",
+            start=rrb.TimeRangeBoundary.cursor_relative(seconds=-_PLOT_WINDOW_S),
+            end=rrb.TimeRangeBoundary.cursor_relative(),
+        ),
+    ]
+
+
+def _plot(rrb, name, origin):
+    return rrb.TimeSeriesView(name=name, origin=origin, time_ranges=_plot_ranges(rrb))
+
+
 def _arm_blueprint(rrb, root, *, intrinsics):
-    """3D arm left; joint angles and EE poses right; camera under the arm."""
+    """3D arm and joint angles left; camera and EE poses right."""
     arm_view = rrb.Spatial3DView(
         name="SO-101", origin=root,
         contents=[f"{root}/**", "/tf_static", "/transforms/**"],
         overrides={f"{root}/collision_geometries": rrb.EntityBehavior(visible=False)},
+        background=rrb.Background(
+            kind=rrb.BackgroundKind.SolidColor, color=(24, 24, 24, 255),
+        ),
     )
-    joint_plot = rrb.TimeSeriesView(name="Joint angles (degrees)", origin="/telemetry/joints")
+    joint_plot = _plot(rrb, "Joint angles (degrees)", "/telemetry/joints")
     pose_plots = rrb.Horizontal(
-        rrb.TimeSeriesView(name="EE XYZ (m)", origin="/telemetry/ee/xyz"),
-        rrb.TimeSeriesView(name="EE RPY (deg)", origin="/telemetry/ee/rpy"),
+        _plot(rrb, "EE XYZ (m)", "/telemetry/ee/xyz"),
+        _plot(rrb, "EE RPY (deg)", "/telemetry/ee/rpy"),
     )
-    telemetry = rrb.Vertical(joint_plot, pose_plots)
     if intrinsics is None:
-        layout = rrb.Horizontal(arm_view, telemetry)
+        layout = rrb.Horizontal(arm_view, rrb.Vertical(joint_plot, pose_plots))
     else:
         camera = rrb.Spatial2DView(name="Camera", origin=_CAMERA)
-        layout = rrb.Horizontal(rrb.Vertical(arm_view, camera), telemetry)
-    return rrb.Blueprint(layout, auto_views=False)
+        layout = rrb.Horizontal(
+            rrb.Vertical(arm_view, joint_plot),
+            rrb.Vertical(camera, pose_plots),
+        )
+    return rrb.Blueprint(layout, auto_views=False, collapse_panels=True)
 
 
 class Twin:
     """One 3D view plus joint-angle and EE pose plots."""
 
     def __init__(self, urdf: str | Path, *, spawn: bool = True, recording: str | None = None,
-                 intrinsics=None):
+                 intrinsics=None, grpc_url: str | None = None):
         import rerun as rr
         import rerun.blueprint as rrb
 
@@ -111,7 +140,10 @@ class Twin:
             raise ValueError("Follower URDF missing gripper jaw joint")
         self.tick = 0
         self.ee_tool_offset = None
-        rr.init("so101_control", spawn=spawn and recording is None)
+        self.alive = True
+        rr.init("so101_control", spawn=spawn and recording is None and grpc_url is None)
+        if grpc_url:
+            rr.connect_grpc(grpc_url)
         if recording is not None:
             rr.save(recording)
 
@@ -147,12 +179,24 @@ class Twin:
             raise ValueError("EE tool offset must be a non-zero distance")
         self.ee_tool_offset = offset
 
+    def close(self) -> None:
+        """Stop sending to the viewer. Later draws become no-ops."""
+        if not self.alive:
+            return
+        self.alive = False
+        try:
+            self.rr.disconnect()
+        except Exception:
+            pass
+
     def show_goal_pose(self, pose) -> None:
         """Draw the tool pose `move_to` solved.
 
         Rotation is gripper_frame_link (X out the fingers). Translation is the
         tool point, offset along that frame's +Z when `ee_tool_offset` is set.
         """
+        if not self.alive:
+            return
         matrix = np.asarray(pose, dtype=float)
         if matrix.shape != (4, 4) or not np.isfinite(matrix).all():
             raise ValueError("Invalid goal pose")
@@ -166,6 +210,8 @@ class Twin:
 
     def update(self, state: dict[str, float], *, ee_pose=None) -> None:
         """Log one frame. Callers flush once the frame is complete."""
+        if not self.alive:
+            return
         self.tick += 1
         self.rr.set_time("tick", sequence=self.tick)
         for name, joint in self.joints.items():
@@ -219,13 +265,16 @@ class Twin:
 
     def log_camera(self, image_bgr) -> None:
         """Show one RGB frame. `image_bgr` is OpenCV BGR."""
+        if not self.alive:
+            return
         if self.intrinsics is None:
             raise RuntimeError("This twin was opened without a camera view")
         _log_rgb(self.rr, image_bgr)
 
     def flush(self) -> None:
         """Push the latest log data to the viewer now."""
-        _flush(self.rr)
+        if self.alive:
+            _flush(self.rr)
 
     def show(self, arm) -> None:
         state = arm.get_joints()
@@ -274,6 +323,55 @@ def follow(arm, twin: Twin, *, relax: bool = False) -> None:
         print("Twin closed.")
 
 
+def log_hand_eye(twin, image_bgr, arm, tag, base_T_camera=None, detector=None):
+    """Draw the arm, the tag, and the camera on an existing twin.
+
+    Returns camera_T_tag, or None when the tag is not a single clear detection.
+    The JPEG click view is separate and is not modified here.
+    """
+    if not getattr(twin, "alive", True):
+        return None
+    state = arm.get_joints()
+    tool = arm.gripper_frame_pose(state)
+    twin.update(state, ee_pose=tool)
+    base_T_gripper = arm.gripper_link_pose(state)
+    root = f"/{twin.tree.name}"
+    rr = twin.rr
+    rr.log(f"{root}/fk_ee_axes", _frame_arrows(rr, tool, "tool"))
+    rr.log(f"{root}/gripper_link_axes",
+           _frame_arrows(rr, base_T_gripper, "link", length=_LINK_AXIS_M))
+    mount = tag.gripper_T_tag
+    rr.log("transforms/tag_mount", rr.Transform3D(
+        translation=mount[:3, 3], mat3x3=mount[:3, :3],
+        parent_frame="gripper_link", child_frame="tag_mount"))
+    image = np.ascontiguousarray(image_bgr).copy()
+    try:
+        camera_T_tag, corners = find_tag(image, twin.intrinsics, tag, detector=detector)
+    except ValueError as exc:
+        camera_T_tag = None
+        draw_error(image, str(exc), (40, 40, 220))
+    else:
+        draw_tag_overlay(image, corners, tag)
+        if base_T_camera is not None:
+            seen = base_T_camera @ camera_T_tag
+            rr.log("transforms/camera_tag", rr.Transform3D(
+                translation=seen[:3, 3], mat3x3=seen[:3, :3],
+                parent_frame="base_link", child_frame="camera_tag"))
+    if base_T_camera is not None:
+        rr.log("transforms/station_camera", rr.Transform3D(
+            translation=base_T_camera[:3, 3], mat3x3=base_T_camera[:3, :3],
+            parent_frame="base_link", child_frame="station_camera"))
+        rr.log(f"{root}/camera_axes",
+               _frame_arrows(rr, base_T_camera, "camera", length=_CAMERA_AXIS_M))
+    tag_pose = base_T_gripper @ mount
+    rr.log(f"{root}/tag_axes", _frame_arrows(rr, tag_pose, "tag", length=_TAG_AXIS_M))
+    for path in ("camera_axes", "tag_axes", "gripper_link_axes"):
+        rr.log(f"{root}/{path}", rr.CoordinateFrame("base_link"), static=True)
+    twin.log_camera(image)
+    twin.flush()
+    return camera_T_tag
+
+
 class HandEyeView:
     """Twin, tag image, and tag axes while collecting hand-eye samples.
 
@@ -292,44 +390,9 @@ class HandEyeView:
             self.rr.log(f"{root}/{path}", self.rr.CoordinateFrame("base_link"), static=True)
 
     def update(self, frame, arm, base_T_camera=None):
-        state = arm.get_joints()
-        tool = arm.gripper_frame_pose(state)
-        self.twin.update(state, ee_pose=tool)
-        base_T_gripper = arm.gripper_link_pose(state)
-        root = f"/{self.twin.tree.name}"
-        # Relabel the twin FK triad as "tool" so it is not confused with the tag.
-        self.rr.log(f"{root}/fk_ee_axes", _frame_arrows(self.rr, tool, "tool"))
-        self.rr.log(f"{root}/gripper_link_axes",
-                    _frame_arrows(self.rr, base_T_gripper, "link", length=_LINK_AXIS_M))
-        mount = self.tag.gripper_T_tag
-        self.rr.log("transforms/tag_mount", self.rr.Transform3D(
-            translation=mount[:3, 3], mat3x3=mount[:3, :3],
-            parent_frame="gripper_link", child_frame="tag_mount"))
-        image = frame.rgb_bgr.copy()
-        try:
-            camera_T_tag, corners = find_tag(image, self.intrinsics, self.tag,
-                                             detector=self.detector)
-        except ValueError as exc:
-            camera_T_tag = None
-            draw_error(image, str(exc), (40, 40, 220))
-        else:
-            draw_tag_overlay(image, corners, self.tag)
-            if base_T_camera is not None:
-                seen = base_T_camera @ camera_T_tag
-                self.rr.log("transforms/camera_tag", self.rr.Transform3D(
-                    translation=seen[:3, 3], mat3x3=seen[:3, :3],
-                    parent_frame="base_link", child_frame="camera_tag"))
-        if base_T_camera is not None:
-            self.rr.log("transforms/station_camera", self.rr.Transform3D(
-                translation=base_T_camera[:3, 3], mat3x3=base_T_camera[:3, :3],
-                parent_frame="base_link", child_frame="station_camera"))
-            self.rr.log(f"{root}/camera_axes",
-                        _frame_arrows(self.rr, base_T_camera, "camera", length=_CAMERA_AXIS_M))
-        tag_pose = base_T_gripper @ mount
-        self.rr.log(f"{root}/tag_axes", _frame_arrows(self.rr, tag_pose, "tag", length=_TAG_AXIS_M))
-        self.twin.log_camera(image)
-        self.twin.flush()
-        return camera_T_tag
+        return log_hand_eye(
+            self.twin, frame.rgb_bgr, arm, self.tag, base_T_camera, detector=self.detector,
+        )
 
 
 def _format_pose(pose, tag: Tag) -> str:

@@ -15,30 +15,11 @@ import numpy as np
 
 from so101_control import SO101
 from so101_control.motion import MotionError
+from so101_utils.auto_hand_eye import DWELL_S, calibration_poses
 from so101_utils.camera import open_camera
 from so101_utils.config import arm_parser, load_robot, save_camera_intrinsics, save_hand_eye
 from so101_utils.transforms import MIN_POSES, Sample, solve_eye_to_hand
 from so101_utils.views import HandEyeView
-
-# x y z roll pitch yaw. Roll fixed at -170.
-_RECORDED = (
-    (0.24,  0.03, 0.13, -170.0,  3.0,   8.0),
-    (0.23,  0.03, 0.20, -170.0,  2.0,   8.0),
-    (0.18, -0.15, 0.20, -170.0,  7.0, -48.0),
-    (0.21, -0.16, 0.11, -170.0, -6.0, -44.0),
-    (0.31, -0.14, 0.09, -170.0, -2.0, -28.0),
-)
-
-# After the joint commands are sent, wait for the arm to finish moving.
-DWELL_S = 1.5
-
-
-def calibration_poses():
-    """Recorded poses plus the XZ-plane mirror (flip y and yaw)."""
-    poses = list(_RECORDED)
-    for x, y, z, roll, pitch, yaw in _RECORDED:
-        poses.append((x, -y, z, roll, pitch, -yaw))
-    return poses
 
 
 def capture_sample(arm, cam, view, estimate):

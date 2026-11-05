@@ -355,9 +355,11 @@ def test_workshop_entrypoints_keep_the_arm_api():
     root = Path(__file__).parents[1]
     for path in ("scripts/keyboard_control.py", "application/click_and_go.py",
                  "application/pick_and_place.py"):
-        text = (root / path).read_text()
-        assert "move_to(" in text
         spec = importlib.util.spec_from_file_location(path.replace("/", "_"), root / path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-    assert "downward=True" in (root / "application/click_and_go.py").read_text()
+    assert "move_to(" in (root / "src/so101_control/teleop.py").read_text()
+    moves = (root / "src/so101_utils/moves.py").read_text()
+    assert "move_to(" in moves
+    assert "downward=True" in moves
+    assert "move_to(" in (root / "application/pick_and_place.py").read_text()

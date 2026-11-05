@@ -42,3 +42,33 @@ def click_target(click, intrinsics, base_T_camera, height_m) -> np.ndarray:
     plane = base_link_plane()
     point = intersect_pixel(click, intrinsics, base_T_camera, plane["point"], plane["normal"])
     return point + plane["normal"] * height_m
+
+
+def select_box(click, boxes, resolution, intrinsics):
+    """The smallest detection box under a click, its index, and its centre pixel.
+
+    Boxes use the detection resolution, which can differ from the camera frame.
+    """
+    width = float(intrinsics.width)
+    height = float(intrinsics.height)
+    res_x, res_y = (
+        (float(value) for value in resolution) if resolution else (width, height)
+    )
+    x = click[0] * res_x / width
+    y = click[1] * res_y / height
+    found = None
+    for index, box in enumerate(boxes):
+        inside = box["x1"] <= x <= box["x2"] and box["y1"] <= y <= box["y2"]
+        if not inside:
+            continue
+        area = (box["x2"] - box["x1"]) * (box["y2"] - box["y1"])
+        if found is None or area < found[0]:
+            found = (area, index, box)
+    if found is None:
+        raise ValueError("Click inside a detection box to pick that object")
+    _, index, box = found
+    centre = (
+        int((box["x1"] + box["x2"]) / 2.0 * width / res_x),
+        int((box["y1"] + box["y2"]) / 2.0 * height / res_y),
+    )
+    return index, box, centre

@@ -83,14 +83,18 @@ class SO101:
 
     @classmethod
     def connect(cls, mock: bool = False, config_path: str | None = None, *,
-                ee_tool_offset: float = DEFAULT_EE_TOOL_OFFSET_M) -> "SO101":
+                ee_tool_offset: float = DEFAULT_EE_TOOL_OFFSET_M,
+                require_calibration: bool = True) -> "SO101":
         config = load_robot(config_path)
         limits = validated_limits(config)
         kinematics = Kinematics(config["urdf"], ee_tool_offset=ee_tool_offset)
         if mock:
             backend = MockBackend()
         else:
-            backend = OffsetBackend(connect_live(config), joint_offsets(config))
+            backend = OffsetBackend(
+                connect_live(config, require_calibration=require_calibration),
+                joint_offsets(config),
+            )
         return cls(backend, kinematics, limits, mock=mock, ee_tool_offset=ee_tool_offset)
 
     def __enter__(self) -> "SO101":
@@ -150,6 +154,11 @@ class SO101:
         if not math.isfinite(speed) or not MIN_SPEED_DEG_S <= speed <= MAX_SPEED_DEG_S:
             raise ValueError(f"Speed must be from {MIN_SPEED_DEG_S:.0f} to {MAX_SPEED_DEG_S:.0f} deg/s")
         self._speed = speed
+
+    @property
+    def speed(self) -> float:
+        """Joint speed used by later moves, in degrees per second."""
+        return self._speed
 
     def get_joints(self) -> dict[str, float]:
         """Arm joints in degrees. Gripper is percent: 0 closed, 100 fully open."""
@@ -248,20 +257,31 @@ class SO101:
         if self._goal:
             self._move(self._goal, wait=True)
 
+    def clear_commands(self) -> None:
+        """Forget the last goal and command cache so the next move starts at the encoders."""
+        self._goal = None
+        self._sent = None
+
     def relax(self) -> None:
         """Torque off. Support the arm; it can fall. Not an emergency stop."""
-        if not self.mock:
-            self._backend.bus.disable_torque()
-        self.torque_on = False
+        try:
+            if not self.mock:
+                self._backend.bus.disable_torque()
+        finally:
+            self.clear_commands()
+            self.torque_on = False
         print("Torque OFF. Support the arm; it can fall.")
 
     def hold(self) -> None:
         """Torque on, holding the position the arm is in right now."""
-        if not self.mock:
-            bus = self._backend.bus
-            bus.sync_write("Goal_Position", bus.sync_read("Present_Position"))
-            bus.enable_torque()
-        self.torque_on = True
+        try:
+            if not self.mock:
+                bus = self._backend.bus
+                bus.sync_write("Goal_Position", bus.sync_read("Present_Position"))
+                bus.enable_torque()
+        finally:
+            self.clear_commands()
+            self.torque_on = True
         print("Torque ON at the measured position.")
 
     def _move(self, targets: dict[str, float], *, wait: bool = True, cancel=None) -> bool:
@@ -270,17 +290,26 @@ class SO101:
         if self._sent and set(targets) <= set(self._sent):
             start = {name: float(self._sent[name]) for name in targets}
         sent: dict[str, float] = {}
-        done = move_joints(
-            self._backend, targets, self._limits,
-            speed_deg_s=self._speed, period_s=MOCK_PERIOD_S if self.mock else LIVE_PERIOD_S,
-            timeout_s=MOVE_TIMEOUT_S, wait=wait, on_step=self._on_motion, cancel=cancel,
-            start=start, commanded=sent,
-        )
+        try:
+            done = move_joints(
+                self._backend, targets, self._limits,
+                speed_deg_s=self._speed, period_s=MOCK_PERIOD_S if self.mock else LIVE_PERIOD_S,
+                timeout_s=MOVE_TIMEOUT_S, wait=wait, on_step=self._on_motion, cancel=cancel,
+                start=start, commanded=sent,
+            )
+        except Exception:
+            self.clear_commands()
+            raise
+        if done is None:
+            # A cancelled move leaves the arm somewhere between the start and
+            # the goal. Never resume from that stale command.
+            self.clear_commands()
+            return False
         if sent:
             if self._sent is None:
                 self._sent = {}
             self._sent.update(sent)
-        return done is not None
+        return True
 
     def _gripper(self, percent: float) -> None:
         """Command the gripper (0 closed, 100 fully open).

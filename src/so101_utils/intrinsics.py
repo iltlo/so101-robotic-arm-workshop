@@ -7,6 +7,8 @@ from so101_utils.transforms import Intrinsics
 # Inner corners of the lab board: 9 by 12 squares. OpenCV also accepts the swap.
 INNER_CORNERS = (8, 11)
 MIN_VIEWS = 3
+# The calibration page and script ask for ten tilted views. The solver accepts three.
+WORKSHOP_MIN_VIEWS = 10
 # Full-frame search on 1920x1080 is what makes the calibration view lag.
 _DETECT_WIDTH = 960
 
@@ -83,6 +85,26 @@ def draw_chessboard(image_bgr, corners, message, inner_corners=INNER_CORNERS):
     cv2.putText(image, message, (12, 36), cv2.FONT_HERSHEY_SIMPLEX,
                 0.8, (20, 220, 20), 2, cv2.LINE_AA)
     return image
+
+
+def capture_chessboard(image_bgr):
+    """Object points and refined corners for one frame, or ValueError."""
+    found = find_chessboard(image_bgr, INNER_CORNERS)
+    if found is None:
+        raise ValueError("No chessboard in this frame.")
+    corners, pattern = found
+    return chessboard_object(pattern), corners.copy()
+
+
+def solve_captured(samples, image_size, *, minimum: int = WORKSHOP_MIN_VIEWS):
+    """Brown-Conrady fit after `minimum` captures. Returns intrinsics and RMS pixels."""
+    if len(samples) < minimum:
+        raise ValueError(f"Need {minimum} views, have {len(samples)}.")
+    return solve_intrinsics(
+        [item[0] for item in samples],
+        [item[1] for item in samples],
+        image_size,
+    )
 
 
 def solve_intrinsics(object_points, image_points, image_size) -> tuple[Intrinsics, float]:
