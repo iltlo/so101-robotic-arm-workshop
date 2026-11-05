@@ -17,7 +17,7 @@ A short path from a fresh checkout to moving the follower. Distances are **metre
 - [x] Click and pick: pick at the click, release at rest (`application/click_and_pick.py`)
 - [x] Pick and place (`application/pick_and_place.py`)
 
-Not in this workshop: YOLO, depth picking, and the interactive motor-calibration UI. Motor IDs and ranges come from the official LeRobot calibrator.
+Not in this workshop: YOLO, depth picking, and the interactive motor-calibration UI. Motor midpoint and ranges are recorded by `scripts/calibrate_motors.py` into `config/motors.json`.
 
 ## Safety
 
@@ -47,16 +47,13 @@ uv run python scripts/check_port.py
 
 ## 3. Calibrate the motors
 
-Do this once, with the official tool, before any live motion. Use the port and `arm_id` from `config/robot.yaml` (`workshop_follower` on this station).
+Do this once, before any live motion. Use the port from `config/robot.yaml`.
 
 ```sh
-uv run lerobot-calibrate \
-  --robot.type=so101_follower \
-  --robot.port=/dev/ttyACM0 \
-  --robot.id=workshop_follower
+uv run python scripts/calibrate_motors.py
 ```
 
-LeRobot stores the calibration in its own JSON file. `joint_limits_deg` and `joint_offsets_deg` in `config/robot.yaml` are the limits and the small zero corrections for this arm. Edit the offsets only if you re-measure them. 0° is the calibrated midpoint.
+Torque turns off and the arm is moved by hand, so support it. The midpoint and each joint range are saved to `config/motors.json`. Wrist roll keeps a full turn, so it is not swept. A later connect loads that file onto the servos. `joint_limits_deg` and `joint_offsets_deg` in `config/robot.yaml` stay the limits and the small zero corrections for this arm. Edit the offsets only if you re-measure them. 0° is the calibrated midpoint.
 
 ## 4. See the arm
 
@@ -183,7 +180,7 @@ uv run python application/pick_and_place.py --live
 
 ## Config
 
-The default camera is the webcam in `config/camera.yaml` (`backend: webcamera`). `device` is the camera index: `/dev/videoN` on Linux, DirectShow on Windows, and AVFoundation on macOS. Set `backend: recamera` for the reCamera RTSP stream (`url`), or `backend: realsense` for a RealSense, and set `width`, `height`, and `fps` to a mode that camera supports. The webcam `fx` and `fy` are placeholders until you run `calibration/intrinsics.py`, and `config/hand_eye.yaml` is still the RealSense pose. Measure the intrinsics, then rerun `calibration/hand_eye.py`, before any live click.
+The default camera is the webcam in `config/camera.yaml` (`backend: webcamera`). `device` is the camera index: `/dev/videoN` on Linux, DirectShow on Windows, and AVFoundation on macOS. Set `backend: recamera` for the reCamera supervisor websocket (`url`, `ws://<host>:8090/ws/boxes`), or `backend: realsense` for a RealSense, and set `width`, `height`, and `fps` to a mode that camera supports. The webcam `fx` and `fy` are placeholders until you run `calibration/intrinsics.py`, and `config/hand_eye.yaml` is still the RealSense pose. Measure the intrinsics, then rerun `calibration/hand_eye.py`, before any live click.
 
 | File | What you edit |
 | --- | --- |

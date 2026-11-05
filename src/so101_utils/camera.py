@@ -1,4 +1,4 @@
-"""RGB capture from a webcam, a reCamera RTSP stream, or a RealSense. Depth is not used."""
+"""RGB capture from a webcam, a reCamera websocket, or a RealSense. Depth is not used."""
 
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -18,19 +18,16 @@ DEFAULT_WIDTH = 640
 DEFAULT_HEIGHT = 480
 DEFAULT_FPS = 30
 FRAME_TIMEOUT_MS = 2000
-# The RTSP demuxer blocks through the first keyframe. Later frames are quick.
-_STARTUP_TIMEOUT_S = 20
-# Camera input flags from the reCamera low-latency ffmpeg command.
-# `fflags;nobuffer` and `flags;low_delay` drop SPS/PPS on this device, and
-# `max_delay;0` leaves the default queue (about three seconds) to be played
-# back in order. A short max_delay and no reorder queue make buffered frames
-# return immediately, so the grab loop can keep the newest one.
-_FFMPEG_CAPTURE_OPTIONS = (
-    "rtsp_transport;tcp|max_delay;500000|reorder_queue_size;0|rw_timeout;5000000"
-)
-# A frame already in the demuxer returns in about a millisecond.
+# How long open waits for the first supervisor JPEG.
+_STARTUP_TIMEOUT_S = 10
+# A frame already in the webcam queue returns in about a millisecond.
 # A frame from the camera waits out a frame interval.
 _QUEUED_S = 0.008
+# Supervisor socket used by recamera_client.Recamera.frames.
+_RECAMERA_WS_PORT = 8090
+_RECAMERA_WS_PATH = "/ws/boxes"
+# Short enough that close() unblocks, long enough to wait for the next JPEG.
+_RECV_TIMEOUT_S = 0.5
 
 
 @dataclass
@@ -51,77 +48,76 @@ def camera_backend(cfg: dict) -> str:
     return backend
 
 
-def _rtsp_endpoint(url: str) -> tuple[str, int]:
-    parsed = urlparse(url)
-    if not parsed.hostname:
-        raise RuntimeError(f"reCamera URL has no host: {url}")
-    return parsed.hostname, parsed.port or 554
+def recamera_ws_url(url: str) -> str:
+    """Supervisor websocket. An rtsp:// URL keeps its host and uses this socket."""
+    text = str(url or "").strip()
+    if text.startswith(("ws://", "wss://")):
+        return text
+    host = urlparse(text).hostname
+    if not host:
+        raise ValueError(f"reCamera URL has no host: {url}")
+    return f"ws://{host}:{_RECAMERA_WS_PORT}{_RECAMERA_WS_PATH}"
 
 
-def _require_rtsp_port(host: str, port: int) -> None:
-    import socket
+def _image_from_recamera_message(raw) -> np.ndarray | None:
+    """BGR image from one supervisor message, or None when it has no JPEG."""
+    import base64
+    import json
 
-    sock = socket.socket()
-    sock.settimeout(2)
-    try:
-        sock.connect((host, port))
-    except OSError as exc:
-        reason = exc.strerror or str(exc)
-        raise RuntimeError(
-            f"reCamera RTSP port {port} on {host} is not accepting connections ({reason}). "
-            "The page on port 80 can still load. The video service is not running; "
-            "power-cycle the camera or start the dashboard preview, then try again."
-        ) from exc
-    finally:
-        sock.close()
-
-
-def _open_rtsp(url: str):
     import cv2
 
-    host, port = _rtsp_endpoint(url)
-    _require_rtsp_port(host, port)
-    print(f"Opening the reCamera RTSP stream at {host}. "
-          "The pictures on the camera web page are a separate preview. "
-          "Waiting for the next H.264 keyframe takes about half a minute.",
-          flush=True)
-    # Joining mid-stream logs "non-existing PPS" for every slice before the keyframe.
-    os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "quiet"
-    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = _FFMPEG_CAPTURE_OPTIONS
-    capture = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
-    if not capture.isOpened():
-        capture.release()
-        raise RuntimeError(f"Could not open reCamera stream {url}")
-    capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    return capture
+    text = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    data = payload.get("data", payload)
+    if not isinstance(data, dict):
+        return None
+    encoded = data.get("image") or ""
+    if not encoded:
+        return None
+    try:
+        jpeg = base64.b64decode(encoded)
+    except (ValueError, TypeError):
+        return None
+    return cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
 
 
 class Recamera:
-    """Latest BGR frame from an RTSP URL. Intrinsics come from config, not the stream."""
+    """Latest BGR frame from the reCamera supervisor websocket.
 
-    def __init__(self, url: str, intrinsics: Intrinsics, *, capture=None):
-        self.url = url
+    Intrinsics come from config, not the stream. `frames` yields BGR images
+    and skips the socket; tests use it.
+    """
+
+    def __init__(self, url: str, intrinsics: Intrinsics, *, frames=None, timeout: float = 10.0):
+        self.url = recamera_ws_url(url)
         self.intrinsics = intrinsics
         intrinsics.matrix()
-        self._capture = capture if capture is not None else _open_rtsp(url)
+        self._timeout = timeout
+        self._frames = frames
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._ready = threading.Condition(self._lock)
         self._latest: Frame | None = None
         self._seq = 0
+        self._delivered = 0
         self._failed: BaseException | None = None
         self._thread: threading.Thread | None = None
         try:
-            if not self._capture.isOpened():
-                raise RuntimeError(f"Could not open reCamera stream {url}")
-            if capture is None:
+            if frames is None:
+                print(f"Opening the reCamera stream at {self.url}.", flush=True)
+            self._thread = threading.Thread(target=self._run, name="recamera", daemon=True)
+            self._thread.start()
+            if frames is None:
                 self._await_first_frame()
                 frame = self._latest
                 if frame is not None:
                     height, width = frame.image.shape[:2]
                     print(f"reCamera stream is up, {width}x{height}.", flush=True)
-            self._thread = threading.Thread(target=self._run, name="recamera", daemon=True)
-            self._thread.start()
         except Exception:
             self.close()
             raise
@@ -130,7 +126,7 @@ class Recamera:
         """Block until a frame newer than the last `read`, or raise at the timeout."""
         deadline = time.monotonic() + FRAME_TIMEOUT_MS / 1000
         with self._lock:
-            seen = self._seq
+            seen = self._delivered
             while self._seq == seen and self._failed is None and not self._stop.is_set():
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -139,6 +135,7 @@ class Recamera:
             self._raise_if_stopped()
             if self._seq == seen:
                 raise RuntimeError("No reCamera frame")
+            self._delivered = self._seq
             return self._latest
 
     def poll(self) -> Frame | None:
@@ -156,46 +153,26 @@ class Recamera:
             thread.join(timeout=_STARTUP_TIMEOUT_S)
             if thread.is_alive():
                 return
-        self._release()
 
     def _await_first_frame(self) -> None:
-        """Publish the live picture, not the oldest frame in the RTSP queue."""
         deadline = time.monotonic() + _STARTUP_TIMEOUT_S
-        latest = None
-        while time.monotonic() < deadline and not self._stop.is_set():
-            ok, image, waited = self._read_capture()
-            if not ok or image is None:
-                time.sleep(0.01)
-                continue
-            latest = image
-            if waited < _QUEUED_S:
-                continue
-            # The first paced read can still have the rest of the queue behind it.
-            latest = self._take_queued(latest, deadline)
-            self._publish(latest)
-            if self._failed is not None:
-                raise self._failed
-            return
-        raise RuntimeError("No reCamera frame")
-
-    def _take_queued(self, latest, deadline: float):
-        while time.monotonic() < deadline and not self._stop.is_set():
-            ok, image, waited = self._read_capture()
-            if not ok or image is None:
-                return latest
-            if waited >= _QUEUED_S:
-                return image
-            latest = image
-        return latest
+        with self._lock:
+            while self._seq == 0 and self._failed is None and not self._stop.is_set():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._ready.wait(remaining)
+            self._raise_if_stopped()
+            if self._seq == 0:
+                raise RuntimeError("No reCamera frame")
 
     def _run(self) -> None:
         try:
-            while not self._stop.is_set():
-                image = self._newest()
+            source = self._frames if self._frames is not None else self._websocket_frames()
+            for image in source:
                 if self._stop.is_set():
                     return
                 if image is None:
-                    time.sleep(0.01)
                     continue
                 self._publish(image)
                 if self._failed is not None:
@@ -203,36 +180,40 @@ class Recamera:
         except Exception as exc:
             self._fail(exc)
         finally:
-            self._release()
             with self._lock:
                 self._ready.notify_all()
 
-    def _newest(self):
-        """Newest frame. Pictures that return immediately were already buffered."""
-        latest = None
+    def _websocket_frames(self):
+        """JPEGs from the supervisor socket. Reconnect after the first picture."""
+        from websockets.exceptions import ConnectionClosed
+        from websockets.sync.client import connect
+
+        delay = 1.0
+        connected = False
         while not self._stop.is_set():
-            ok, image, waited = self._read_capture()
-            if not ok or image is None:
-                return latest
-            latest = image
-            if waited >= _QUEUED_S:
-                return latest
-        return latest
-
-    def _read_capture(self):
-        capture = self._capture
-        if capture is None:
-            return False, None, 0.0
-        started = time.monotonic()
-        ok, image = capture.read()
-        return bool(ok), image, time.monotonic() - started
-
-    def _release(self) -> None:
-        with self._lock:
-            capture = self._capture
-            self._capture = None
-        if capture is not None:
-            capture.release()
+            try:
+                with connect(self.url, open_timeout=self._timeout, max_size=None) as ws:
+                    delay = 1.0
+                    while not self._stop.is_set():
+                        try:
+                            raw = ws.recv(timeout=_RECV_TIMEOUT_S)
+                        except TimeoutError:
+                            continue
+                        image = _image_from_recamera_message(raw)
+                        if image is None:
+                            continue
+                        connected = True
+                        yield image
+            except (ConnectionClosed, TimeoutError, OSError) as exc:
+                if self._stop.is_set():
+                    return
+                if not connected:
+                    raise RuntimeError(
+                        f"Could not open reCamera stream {self.url} ({exc})"
+                    ) from exc
+                if self._stop.wait(delay):
+                    return
+                delay = min(5.0, delay * 1.5)
 
     def _publish(self, image) -> None:
         height, width = int(image.shape[0]), int(image.shape[1])

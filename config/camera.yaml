@@ -1,7 +1,7 @@
 # RGB camera. Chessboard intrinsics are written by calibration/intrinsics.py.
 backend: webcamera
 device: 0
-url: rtsp://admin:admin@192.168.42.1:554/live
+url: ws://192.168.42.1:8090/ws/boxes
 serial: null
 width: 1280
 height: 720
