@@ -2,4 +2,3 @@
 
 - [Hugging Face LeRobot](https://github.com/huggingface/lerobot), Apache-2.0, pinned to version 0.6.1 as a package dependency. SO-101 follower IO and the Placo-backed `RobotKinematics` are imported and used, **not copied**. See upstream license and documentation.
 - [TheRobotStudio SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100), Apache-2.0, commit `a758567c3978dfeefe282ede0500085a48fe8f78`. Setup downloads their original SO-101 follower URDF and meshes, plus `LICENSE.upstream`, into `assets/SO101/`. The URDF is generated from Onshape CAD via `onshape-to-robot` according to upstream. Keep that license with any redistributed assets.
-- `reference/dobot-robotic-arm-workshop/` is historical workshop material with no obvious local origin/license notice. None of its code, numerical station calibrations, scripts, or tag mount constants is copied into `src/`; retain that folder only as a reference pending provenance review.
