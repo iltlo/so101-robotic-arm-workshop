@@ -171,14 +171,24 @@ def test_a_urdf_without_the_tool_frame_fails(urdf_text, tmp_path):
         Kinematics(_write(tmp_path, urdf_text, change))
 
 
-def test_downward_reaches_points_that_need_a_lean_inside_the_cone(kin, limits):
-    """The edge of the table maps to leans the discrete down orientations miss."""
+def test_downward_reaches_edge_points_inside_the_cone(kin, limits):
+    """Edge points need a lean inside the cone, which the twist-free solve finds."""
     start = {name: 0.0 for name in JOINTS}
     for target in ((0.34, -0.12, 0.06), (0.36, 0.0, 0.02), (0.34, 0.15, 0.06)):
         solved = kin.position_ik(start, target, limits, downward=True)
         pose = kin.fk(solved)
         assert np.linalg.norm(kin.tool_point(pose) - target) < 0.015
         assert pose[2, 0] < DOWNWARD_Z
+
+
+def test_a_fixed_downward_pitch_does_not_replace_the_cone(kin, limits):
+    """Pitch 90 pins the twist too; the edge only fits a lean with the twist free."""
+    start = {name: 0.0 for name in JOINTS}
+    target = (0.34, -0.12, 0.06)
+    solved = kin.position_ik(start, target, limits, downward=True)
+    assert np.linalg.norm(kin.tool_point(kin.fk(solved)) - target) < 0.015
+    with pytest.raises(ValueError):
+        kin.position_ik(start, target, limits, rpy=(0.0, 90.0, 0.0))
 
 
 def test_downward_rejects_a_point_only_reachable_from_the_side(kin, limits):

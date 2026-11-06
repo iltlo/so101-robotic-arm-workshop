@@ -207,12 +207,13 @@ class SO101:
 
         x, y, z are metres of the tool point: `ee_tool_offset` along
         gripper_frame_link +Z. roll, pitch, yaw are base-frame degrees; pass all
-        three or none. Pitch +90 points the fingers straight down. None keeps the
-        current orientation, unless `downward` points the fingers straight down.
-        `hold_point` keeps the tool point within a couple of millimetres, lets
-        yaw follow the pan, and refuses a branch jump; a turn that cannot stay
-        there raises instead of moving the arm somewhere else.
-        Returns False when `cancel` stops the move.
+        three or none. Pitch +90 points the fingers straight down with a fixed
+        twist. None keeps the current orientation, unless `downward` holds the
+        finger axis inside the down cone and leaves the twist free, which is what
+        reaches the edge of the table. `hold_point` keeps the tool point within a
+        couple of millimetres, lets yaw follow the pan, and refuses a branch
+        jump; a turn that cannot stay there raises instead of moving the arm
+        somewhere else. Returns False when `cancel` stops the move.
         """
         point = (float(x), float(y), float(z))
         given = (roll, pitch, yaw)
