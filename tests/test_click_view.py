@@ -101,14 +101,14 @@ def test_ready_folds_to_rest_and_a_click_waits():
 
 def test_waiting_click_stops_the_move_before_it_runs():
     module = _load()
-    with SO101.connect(mock=True) as arm, click_view(64, 48) as (view, url):
+    with SO101.connect(mock=True, ee_tool_offset=module.EE_TOOL_OFFSET_M) as arm, \
+            click_view(64, 48) as (view, url):
         arm.move_joint("elbow_flex", -2.0)
-        goal = arm.get_pose()
         arm.home()
         start = arm.get_joints()["elbow_flex"]
         _show(view)
         _post(url + "click", {"x": 1, "y": 1})
-        arrived = module.go_to(arm, view, (goal.x, goal.y, goal.z))
+        arrived = module.go_to(arm, view, (0.28, -0.05, 0.02))
         assert arrived is False
         assert arm.get_joints()["elbow_flex"] == pytest.approx(start)
         assert _get(url + "status")["message"].startswith("Moving to")

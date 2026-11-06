@@ -30,6 +30,13 @@ NEAR_ORIENTATION_STEP_DEG = 20.0
 NEAR_ORIENTATION_DEG = 1.0
 # Gripper +X.z must be below this for a downward solve to count.
 DOWNWARD_Z = -0.95
+# The cone below the base. A downward goal constrains the finger direction to
+# this cone, not to one exact orientation: near the workspace edge no exact
+# pose fits, but a lean inside the cone still points the fingers down.
+_DOWNWARD_TILT = math.acos(-DOWNWARD_Z) - math.radians(0.2)
+# Pull the fingers back inside the cone strongly enough that the solver does not
+# settle just outside it, where the point is within tolerance but not downward.
+_DOWNWARD_TILT_WEIGHT = 2.0
 # A solved pose counts once its tool point is this close, and orientation this close.
 DEFAULT_TOLERANCE_M = 0.015
 DEFAULT_TOLERANCE_DEG = 8.0
@@ -60,14 +67,53 @@ _IK_MAX_STEP_RAD = 0.4
 # One metre of translation and one radian of rotation, matching the scale the
 # recorded solves traded off.
 _ORIENTATION_WEIGHT = 1.0
-# The jaw is not one of JOINTS. Pin it so IK cannot move the fingers' opening.
-_JAW = "gripper"
 # A bare point pins roll and pitch, not yaw: the pan carries the tool sideways and
 # turns yaw together, so the yaw target follows the heading of the point.
 _YAW_ROUNDS = 2
 _YAW_TOLERANCE_DEG = 0.05
 # Below this radius the heading of the point is undefined and pan buys nothing.
 _YAW_RADIUS_M = 0.05
+# A full-limit solve can stall in a local minimum far from the seed. Retry from
+# a fixed low-discrepancy set of seeds, so the same goal always gives the same
+# answer and a reachable pose is not refused because of where the arm started.
+_RESTART_COUNT = 32
+_RESTART_BASES = (2, 3, 5, 7, 11)
+
+
+def _halton(count: int, bases) -> np.ndarray:
+    """Low-discrepancy points in the unit cube, one column per base."""
+    values = np.empty((count, len(bases)))
+    for column, base in enumerate(bases):
+        for index in range(count):
+            number, fraction, value = index + 1, 1.0, 0.0
+            while number:
+                fraction /= base
+                value += fraction * (number % base)
+                number //= base
+            values[index, column] = value
+    return values
+
+
+_RESTART_FRACTIONS = _halton(_RESTART_COUNT, _RESTART_BASES)
+# A folded arm can reach points behind or below the base with the joints near
+# their stops. Uniform restarts rarely land in those narrow basins, so the last
+# fallback seeds the corners of the joint range instead.
+_FOLDED_PAN_SEEDS = 6
+_FOLDED_EDGE_DEG = 5.0
+
+
+def _folded_seeds(lower: np.ndarray, upper: np.ndarray):
+    """Seeds with the lift and elbow near their stops, where folded poses live."""
+    pans = np.linspace(lower[0] + _FOLDED_EDGE_DEG, upper[0] - _FOLDED_EDGE_DEG,
+                       _FOLDED_PAN_SEEDS)
+    for pan in pans:
+        for lift in (lower[1] + _FOLDED_EDGE_DEG, upper[1] - _FOLDED_EDGE_DEG):
+            for elbow in (lower[2] + _FOLDED_EDGE_DEG, upper[2] - _FOLDED_EDGE_DEG):
+                for flex in (0.0, lower[3] + _FOLDED_EDGE_DEG,
+                             upper[3] - _FOLDED_EDGE_DEG):
+                    for roll in (0.0, -120.0, 120.0):
+                        yield np.clip(np.array([pan, lift, elbow, flex, roll]),
+                                      lower, upper)
 
 
 def _frame_with_fingers(fingers: np.ndarray, twist_hint: np.ndarray) -> np.ndarray:
@@ -103,7 +149,7 @@ class IKError(ValueError):
     """The solver could not reach the goal inside the bounds it was given."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class _Joint:
     name: str
     parent: str
@@ -174,29 +220,45 @@ def _pose(rotation: np.ndarray, translation: np.ndarray) -> np.ndarray:
 
 
 def _load_chain(urdf: str) -> tuple[str, tuple[_Joint, ...]]:
-    """Joints in parent-before-child order. Link frames ignore visual meshes."""
+    """Joints in parent-before-child order. Link frames ignore visual meshes.
+
+    Prismatic joints are part of the chain but stay at zero displacement: the
+    arm API has no command for them, and the SO-101 jaw may be modelled either
+    way. Unsupported joint types would silently break the chain, so they fail.
+    """
     root = ET.parse(urdf).getroot()
     joints = []
+    names = set()
     for element in root.findall("joint"):
+        name = element.get("name") or ""
+        if not name:
+            raise ValueError("URDF joint is missing a name")
+        if name in names:
+            raise ValueError(f"Duplicate joint {name}")
+        names.add(name)
         kind = element.get("type")
         if kind not in {"revolute", "continuous", "fixed", "prismatic"}:
-            continue
+            raise ValueError(f"Joint {name} has unsupported type {kind!r}")
         parent = element.find("parent")
         child = element.find("child")
         if parent is None or child is None:
-            raise ValueError(f"Joint {element.get('name')} is missing a link")
-        axis_element = element.find("axis")
-        axis = _vec3(None if axis_element is None else axis_element.get("xyz"))
-        if kind == "prismatic":
-            raise ValueError(f"Prismatic joint {element.get('name')} is not supported")
+            raise ValueError(f"Joint {name} is missing a link")
         movable = kind in {"revolute", "continuous"}
+        axis_element = element.find("axis")
+        # URDF defaults a movable joint with no <axis> to the X axis.
+        axis_text = None
+        if axis_element is not None:
+            axis_text = axis_element.get("xyz")
+        elif movable:
+            axis_text = "1 0 0"
+        axis = _vec3(axis_text)
         if movable:
             norm = float(np.linalg.norm(axis))
             if norm < 1e-8:
-                raise ValueError(f"Joint {element.get('name')} has no axis")
+                raise ValueError(f"Joint {name} has no axis")
             axis = axis / norm
         joints.append(_Joint(
-            name=element.get("name") or "",
+            name=name,
             parent=parent.get("link"),
             child=child.get("link"),
             origin=_origin_matrix(element.find("origin")),
@@ -204,12 +266,14 @@ def _load_chain(urdf: str) -> tuple[str, tuple[_Joint, ...]]:
             movable=movable,
         ))
     children = {joint.child for joint in joints}
+    if len(children) != len(joints):
+        raise ValueError("URDF links have more than one parent joint")
     roots = {joint.parent for joint in joints} - children
     if len(roots) != 1:
         raise ValueError(f"URDF must have one base link, found {sorted(roots)}")
     base = roots.pop()
     ordered: list[_Joint] = []
-    pending = joints
+    pending = list(joints)
     known = {base}
     while pending:
         ready = [joint for joint in pending if joint.parent in known]
@@ -217,7 +281,8 @@ def _load_chain(urdf: str) -> tuple[str, tuple[_Joint, ...]]:
             raise ValueError("URDF joints do not form a tree")
         ordered.extend(ready)
         known.update(joint.child for joint in ready)
-        pending = [joint for joint in pending if joint not in ready]
+        ready_names = {joint.name for joint in ready}
+        pending = [joint for joint in pending if joint.name not in ready_names]
     return base, tuple(ordered)
 
 
@@ -255,24 +320,49 @@ class Kinematics:
         # Metres along gripper_frame_link +Z. Positive follows the blue axis.
         self.ee_tool_offset = offset
         self._lock = RLock()
-        _base, chain = _load_chain(urdf)
+        base, chain = _load_chain(urdf)
         by_name = {joint.name: joint for joint in chain}
-        missing = [name for name in (*JOINTS, _JAW) if name not in by_name]
-        frames = {joint.child for joint in chain}
-        if missing or "gripper_frame_link" not in frames or "gripper_link" not in frames:
-            raise ValueError(f"URDF is missing kinematics frames: {missing or 'gripper links'}")
-        arm = []
+        missing = [name for name in JOINTS if name not in by_name]
         for name in JOINTS:
-            joint = by_name[name]
-            if not joint.movable:
+            if name in by_name and not by_name[name].movable:
                 raise ValueError(f"{name} is not a revolute joint")
-            arm.append((joint.origin[:3, :3].copy(), joint.origin[:3, 3].copy(), joint.axis.copy()))
-        self._arm = tuple(arm)
-        fixed = by_name.get("gripper_frame_joint")
-        if fixed is None or fixed.parent != "gripper_link" or fixed.movable:
-            raise ValueError("URDF is missing the fixed gripper frame")
-        self._fixed_rotation = fixed.origin[:3, :3].copy()
-        self._fixed_translation = fixed.origin[:3, 3].copy()
+        if missing:
+            raise ValueError(f"URDF is missing kinematics frames: {missing}")
+        # Walk the actual tool chain instead of assuming the five arm joints are
+        # adjacent. Fixed spacers and a prismatic jaw must not change the frame.
+        child_to_joint = {joint.child: joint for joint in chain}
+        if "gripper_frame_link" not in child_to_joint:
+            raise ValueError("URDF is missing kinematics frames: gripper_frame_link")
+        tool_chain = []
+        link = "gripper_frame_link"
+        while link != base:
+            joint = child_to_joint.get(link)
+            if joint is None:
+                raise ValueError(f"Link {link} is not connected to the URDF base")
+            tool_chain.append(joint)
+            link = joint.parent
+        # A world link may sit above base_link. The arm API is in the robot base
+        # frame, so stop at base_link when it is on the path to the tool.
+        for index, joint in enumerate(tool_chain):
+            if joint.parent == "base_link":
+                tool_chain = tool_chain[:index + 1]
+                break
+        tool_chain.reverse()
+        tool_names = {joint.name for joint in tool_chain}
+        missing = [name for name in JOINTS if name not in tool_names]
+        if missing:
+            raise ValueError(f"URDF is missing kinematics frames: {missing}")
+        if "gripper_link" not in {joint.child for joint in tool_chain}:
+            raise ValueError("URDF is missing kinematics frames: gripper_link")
+        if tool_chain[-1].child != "gripper_frame_link":
+            raise ValueError("URDF gripper frame is not the end of the arm chain")
+        self._chain = tuple(tool_chain)
+        # Unfolded length from the base to the tool frame. No rotation can put the
+        # tool point farther than this, so a farther goal is outside reach and a
+        # search for it would only burn restarts.
+        self._path_length = float(sum(np.linalg.norm(joint.origin[:3, 3])
+                                      for joint in tool_chain))
+        self._columns = {name: index for index, name in enumerate(JOINTS)}
         self._ee = np.eye(4)
         self._link = np.eye(4)
 
@@ -281,24 +371,33 @@ class Kinematics:
 
     def _remember(self, degrees: np.ndarray):
         """Store gripper_link and gripper_frame_link for `degrees`."""
-        radians = np.deg2rad(np.asarray(degrees, dtype=float))
+        radians = {
+            name: float(value)
+            for name, value in zip(JOINTS, np.deg2rad(np.asarray(degrees, dtype=float)))
+        }
         rotation = np.eye(3)
         translation = np.zeros(3)
-        axes = np.empty((len(JOINTS), 3))
-        pivots = np.empty((len(JOINTS), 3))
-        for index, (origin_rotation, origin_translation, axis) in enumerate(self._arm):
-            placed_rotation = rotation @ origin_rotation
-            placed_translation = rotation @ origin_translation + translation
-            world_axis = placed_rotation @ axis
-            axes[index] = world_axis
-            pivots[index] = placed_translation
-            rotation = placed_rotation @ _rodrigues(axis, float(radians[index]))
-            translation = placed_translation
-        self._link = _pose(rotation, translation)
-        ee_rotation = rotation @ self._fixed_rotation
-        ee_translation = rotation @ self._fixed_translation + translation
-        self._ee = _pose(ee_rotation, ee_translation)
-        return axes, pivots, ee_rotation, ee_translation
+        axes = np.zeros((len(JOINTS), 3))
+        pivots = np.zeros((len(JOINTS), 3))
+        for joint in self._chain:
+            placed_rotation = rotation @ joint.origin[:3, :3]
+            placed_translation = rotation @ joint.origin[:3, 3] + translation
+            if joint.movable:
+                world_axis = placed_rotation @ joint.axis
+                column = self._columns.get(joint.name)
+                if column is not None:
+                    axes[column] = world_axis
+                    pivots[column] = placed_translation
+                angle = radians.get(joint.name, 0.0)
+                rotation = placed_rotation @ _rodrigues(joint.axis, angle)
+                translation = placed_translation
+            else:
+                rotation = placed_rotation
+                translation = placed_translation
+            if joint.child == "gripper_link":
+                self._link = _pose(rotation, translation)
+        self._ee = _pose(rotation, translation)
+        return axes, pivots, rotation, translation
 
     @_locked
     def fk(self, state: dict[str, float]) -> np.ndarray:
@@ -452,22 +551,31 @@ class Kinematics:
         linear, angular, point, pose = self._jacobian(np.asarray(angles, dtype=float))
         return linear, angular, point, pose[:3, :3]
 
-    def _turn_ik(self, seed, goal, rotation, lower, upper, tolerance_m):
+    def _turn_ik(self, seed, goal, rotation, lower, upper, tolerance_m, *,
+                 free_yaw: bool):
         """Hold the tool point while the tool turns, or None if it cannot.
 
         Damped least squares on position plus the tilt the arm can meet. Steps
         stay inside `lower`/`upper`, which the caller narrows to the near window,
-        so a blocked turn cannot snap to another arm branch.
+        so a blocked turn cannot snap to another arm branch. World-Z rotation is
+        free only when the pan carries the tool: on the base axis a wrist twist
+        can hold the yaw, so a yaw goal is honoured there.
         """
         target = np.asarray(goal, dtype=float)
         angles = np.clip(np.asarray(seed, dtype=float), lower, upper)
         best, best_error = angles.copy(), np.inf
         settle_m = min(float(tolerance_m), TURN_SETTLE_M)
+
+        def tilt_error(pose) -> np.ndarray:
+            error = Rotation.from_matrix(rotation @ pose.T).as_rotvec()
+            if free_yaw:
+                error[2] = 0.0
+            return error
+
         for _ in range(TURN_ITERATIONS):
             linear, angular, point, pose = self._tcp_jacobian(angles)
             offset = target - point
-            error = Rotation.from_matrix(rotation @ pose.T).as_rotvec()
-            error[2] = 0.0
+            error = tilt_error(pose)
             weight = float(np.linalg.norm(offset)) + TURN_ROTATION_WEIGHT * float(
                 np.linalg.norm(error))
             if weight < best_error:
@@ -487,12 +595,81 @@ class Kinematics:
                 break
             angles = moved
         linear, angular, point, pose = self._tcp_jacobian(best)
-        error = Rotation.from_matrix(rotation @ pose.T).as_rotvec()
-        error[2] = 0.0
+        error = tilt_error(pose)
         if (np.linalg.norm(target - point) > tolerance_m
                 or np.rad2deg(np.linalg.norm(error)) > TURN_SETTLE_DEG):
             return None
         return best
+
+    def _downward_twist_free(self, seed_deg, target, lower_deg, upper_deg,
+                             tolerance_m: float) -> np.ndarray:
+        """Joint degrees that put the tool point on `target` inside the down cone.
+
+        The orientation-locked search can miss a point that needs a lean inside
+        the cone but none of the sampled directions. This solve leaves the twist
+        about the finger axis free and pulls on the tilt only when the fingers
+        leave the cone, so the point stays reachable at the workspace edge.
+        """
+        target = np.asarray(target, dtype=float)
+        q = np.deg2rad(np.asarray(seed_deg, dtype=float))
+        lower = np.deg2rad(np.asarray(lower_deg, dtype=float))
+        upper = np.deg2rad(np.asarray(upper_deg, dtype=float))
+        q = np.clip(q, lower, upper)
+        rest = q.copy()
+        best = q.copy()
+        best_cost = np.inf
+        tool_offset = np.array([0.0, 0.0, self.ee_tool_offset])
+        position_limit = tolerance_m if tolerance_m < 0.005 else 0.002
+        down = np.array([0.0, 0.0, -1.0])
+
+        def measure(radians):
+            axes, pivots, rotation, translation = self._remember(np.rad2deg(radians))
+            point = translation + rotation @ tool_offset
+            offset = target - point
+            fingers = rotation[:, 0]
+            axis = np.cross(fingers, down)
+            sine = float(np.linalg.norm(axis))
+            tilt = np.zeros(2)
+            angle = math.atan2(sine, float(np.dot(fingers, down)))
+            if angle > _DOWNWARD_TILT:
+                # Fingers straight up have no tilt axis; any horizontal one leads down.
+                direction = axis / sine if sine > 1e-12 else np.array([1.0, 0.0, 0.0])
+                # Only the two tilt rows are used. The rotation about the
+                # finger axis is the direction the arm is free to choose.
+                tilt = (direction[:2] * angle
+                        * (1.0 - _DOWNWARD_TILT / angle)
+                        * _DOWNWARD_TILT_WEIGHT)
+            return axes, pivots, point, offset, tilt
+
+        for _ in range(_IK_INNER_ITERATIONS):
+            axes, pivots, point, offset, tilt = measure(q)
+            cost = float(np.linalg.norm(offset)) + float(np.linalg.norm(tilt))
+            if cost < best_cost:
+                best, best_cost = q.copy(), cost
+            if float(np.linalg.norm(offset)) <= position_limit and not tilt.any():
+                return np.rad2deg(q)
+            linear = np.empty((3, len(JOINTS)))
+            for column in range(len(JOINTS)):
+                axis = axes[column]
+                arm = point - pivots[column]
+                linear[:, column] = np.cross(axis, arm)
+            step = _dls(np.vstack((linear, axes.T[:2])),
+                        np.concatenate((offset, tilt)), q, rest)
+            accepted = None
+            for shrink in range(8):
+                trial = np.clip(q + step * (0.5 ** shrink), lower, upper)
+                if np.allclose(trial, q, atol=1e-8):
+                    break
+                _axes, _pivots, _point, trial_offset, trial_tilt = measure(trial)
+                trial_cost = (float(np.linalg.norm(trial_offset))
+                              + float(np.linalg.norm(trial_tilt)))
+                if trial_cost < cost:
+                    accepted = trial
+                    break
+            if accepted is None:
+                break
+            q = accepted
+        return np.rad2deg(best)
 
     @_locked
     def position_ik(self, state: dict[str, float], target, limits: dict[str, tuple[float, float]],
@@ -523,6 +700,9 @@ class Kinematics:
         goal = np.asarray(target, dtype=float)
         if goal.shape != (3,) or not np.isfinite(goal).all():
             raise ValueError("Invalid TCP target")
+        reach = self._path_length + abs(self.ee_tool_offset)
+        if float(np.linalg.norm(goal)) > reach + 1e-9:
+            raise ValueError(f"IK target is outside the arm's reach ({reach:.3f} m)")
         if downward and rpy is not None:
             raise ValueError("downward replaces an rpy target")
         goal_rotation = None
@@ -551,16 +731,27 @@ class Kinematics:
         # An rpy or downward goal owns the orientation. A bare point only prefers it,
         # so a far target can still be reached.
         allow_position_only = goal_rotation is None and not downward
+        # A bare point keeps roll and pitch but lets yaw track the pan, which is
+        # what makes a sideways step reachable on this arm. A turn with
+        # `follow_yaw` needs the same freedom while it holds the point.
+        follow = (goal_rotation is None or follow_yaw) and not downward
+        yaw_free = follow and float(np.hypot(goal[0], goal[1])) >= _YAW_RADIUS_M
 
         def position_error(angles) -> float:
             return float(np.linalg.norm(self.tool_point(self.fk(dict(zip(JOINTS, angles)))) - goal))
 
         def orientation_error_deg(angles) -> float:
             pose = self.fk(dict(zip(JOINTS, angles)))
+            if yaw_free:
+                # World-Z rotation is the direction a five-joint arm cannot hold
+                # while the pan carries the tool; match the tilt the caller asked for.
+                error = Rotation.from_matrix(goal_rotation @ pose[:3, :3]).as_rotvec()
+                error[2] = 0.0
+                return float(np.rad2deg(np.linalg.norm(error)))
             delta = Rotation.from_matrix(goal_rotation.T @ pose[:3, :3]).magnitude()
             return float(np.rad2deg(delta))
 
-        def near_enough(angles) -> bool:
+        def goal_met(angles) -> bool:
             if position_error(angles) > tolerance_m:
                 return False
             if goal_rotation is not None and orientation_error_deg(angles) > tolerance_deg:
@@ -572,11 +763,6 @@ class Kinematics:
         # Straight down first. A lean still has +X.z < -0.95 when that pose cannot
         # put the tool on the point; the five-joint arm has no exact-down solution there.
         orientations = list(_downward_orientations(keep_rotation)) if downward else [rotation]
-        # A bare point keeps roll and pitch but lets yaw track the pan, which is
-        # what makes a sideways step reachable on this arm. A turn with
-        # `follow_yaw` needs the same freedom while it holds the point.
-        follow = (goal_rotation is None or follow_yaw) and not downward
-        yaw_free = follow and float(np.hypot(goal[0], goal[1])) >= _YAW_RADIUS_M
 
         def solve(seed_angles, low, high, orient):
             if yaw_free:
@@ -596,16 +782,8 @@ class Kinematics:
                 if error < best_error:
                     best = candidate
                     best_error = error
-                if error <= tolerance_m and near_enough(candidate):
+                if goal_met(candidate):
                     return candidate
-            # The full-limit path accepts a point the fingers cannot aim down,
-            # matching the previous solver: only the near window demands +X.z.
-            if downward and best_error > tolerance_m:
-                alt = self._inverse(
-                    seed_angles, low, high, goal, orientations[0], tolerance_m,
-                    lock_orientation=False)
-                if position_error(alt) < best_error:
-                    best = alt
             return best
 
         near_step = NEAR_ORIENTATION_STEP_DEG if goal_rotation is not None else NEAR_STEP_DEG
@@ -615,30 +793,87 @@ class Kinematics:
         if np.all(near_lower < near_upper):
             if follow_yaw:
                 solved = self._turn_ik(
-                    initial, goal, rotation, near_lower, near_upper, tolerance_m)
+                    initial, goal, rotation, near_lower, near_upper, tolerance_m,
+                    free_yaw=yaw_free)
             else:
                 near = solve(initial, near_lower, near_upper, rotation)
                 orientation_fits = (goal_rotation is None
                                     or orientation_error_deg(near) <= NEAR_ORIENTATION_DEG)
-                if orientation_fits and near_enough(near):
+                if orientation_fits and goal_met(near):
                     solved = near
         if solved is None and local_only:
             raise IKError("Cannot hold the tool point through that turn")
         if solved is None:
-            result = search(initial, lower, upper)
+            # An orientation goal that starts far from an exact wrist pose can
+            # stall the locked solve. Reach the point first, then turn the wrist.
+            position_first = goal_rotation is not None and not follow_yaw and not downward
+
+            def attempt_seed(seed_angles):
+                candidate = search(seed_angles, lower, upper)
+                if position_first and not goal_met(candidate):
+                    guess = self._inverse(
+                        seed_angles, lower, upper, goal, rotation, tolerance_m,
+                        lock_orientation=False)
+                    alt = search(guess, lower, upper)
+                    if goal_met(alt) or position_error(alt) < position_error(candidate):
+                        candidate = alt
+                return candidate
+
+            result = attempt_seed(initial)
+            home = np.clip(np.zeros_like(initial), lower, upper)
             # A folded or mid-move seed can sit in a local minimum that the home
             # joints escape, so retry from home before giving up.
-            if position_error(result) > tolerance_m:
-                home = np.clip(np.zeros_like(initial), lower, upper)
-                alt = search(home, lower, upper)
-                if position_error(alt) < position_error(result):
+            if not goal_met(result):
+                alt = attempt_seed(home)
+                if goal_met(alt) or position_error(alt) < position_error(result):
                     result = alt
-            if position_error(result) > tolerance_m:
+            # A sampled down orientation can miss an edge point that only needs
+            # a lean. Solve the cone directly from fixed seeds, which also keeps
+            # a point outside the fingers-down workspace from stalling the caller.
+            if not goal_met(result) and downward:
+                def downward_seeds():
+                    yield initial
+                    yield home
+                    for fraction in _RESTART_FRACTIONS:
+                        yield lower + (upper - lower) * fraction
+
+                for seed_angles in downward_seeds():
+                    alt = self._downward_twist_free(
+                        seed_angles, goal, lower, upper, tolerance_m)
+                    if goal_met(alt):
+                        result = alt
+                        break
+                    if position_error(alt) < position_error(result):
+                        result = alt
+            # A far seed can also land in a narrow basin. The fixed restarts make
+            # a reachable goal independent of where the arm happened to start.
+            if not goal_met(result) and not downward:
+                for fraction in _RESTART_FRACTIONS:
+                    alt = attempt_seed(lower + (upper - lower) * fraction)
+                    if goal_met(alt):
+                        result = alt
+                        break
+                    if position_error(alt) < position_error(result):
+                        result = alt
+            # Behind and below the base, a reachable pose needs a folded arm with
+            # the joints near their stops. Sweep those corners before failing.
+            if not goal_met(result) and position_first:
+                for seed_angles in _folded_seeds(lower, upper):
+                    alt = search(seed_angles, lower, upper)
+                    if goal_met(alt):
+                        result = alt
+                        break
+                    if position_error(alt) < position_error(result):
+                        result = alt
+            if not goal_met(result):
+                if position_error(result) > tolerance_m:
+                    if downward:
+                        raise ValueError(
+                            "IK cannot reach that point with the fingers pointing down")
+                    raise ValueError("IK did not reach the point within joint limits")
                 if downward:
                     raise ValueError(
                         "IK cannot reach that point with the fingers pointing down")
-                raise ValueError("IK did not reach the point within joint limits")
-            if goal_rotation is not None and orientation_error_deg(result) > tolerance_deg:
                 raise ValueError("IK did not match the orientation within joint limits")
             solved = result
         return {name: float(value) for name, value in zip(JOINTS, solved)}
