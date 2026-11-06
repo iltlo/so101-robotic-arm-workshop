@@ -44,9 +44,8 @@ Wheels checked on PyPI for Python 3.12:
 | opencv-python-headless 4.13.0.92 | `win_amd64` | arm64 and x86_64 | manylinux x86_64 and aarch64 |
 | pupil-apriltags 1.0.4.post11 | `win_amd64` | arm64 | manylinux x86_64 |
 | feetech-servo-sdk 1.0.0 | pure-Python sdist | pure-Python sdist | pure-Python sdist |
-| pybullet 3.2.7 | no cp312 wheel | no cp312 wheel | manylinux wheels stop at cp311 |
 
-`pybullet` 3.2.7 has no Python 3.12 wheel, so uv builds the sdist. That needs a C++ compiler. If the build fails, stop there. This project does not fork Bullet.
+Forward and inverse kinematics are NumPy on the URDF, so the install does not compile a solver. NumPy, SciPy, OpenCV, and AprilTags publish wheels for Windows, macOS, and Linux.
 
 The default install talks to the STS3215 servos with the Feetech SDK. Motor calibration writes the midpoint homing offset and the min/max range, then saves `config/motors.json` in the station directory.
 

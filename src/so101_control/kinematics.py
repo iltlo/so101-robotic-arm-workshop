@@ -1,7 +1,16 @@
-"""URDF forward kinematics (PyBullet) and pose IK. Joints in degrees, TCP in metres."""
+"""URDF forward kinematics and pose IK. Joints in degrees, TCP in metres.
 
+The chain is the URDF itself: each joint origin is a rigid transform and each
+revolute joint is a rotation about its axis. Inverse kinematics is damped
+least squares on that chain, with a null-space pull back to the seed so a
+short step keeps the arm configuration the recorded solver produced.
+"""
+
+from dataclasses import dataclass
 from functools import wraps
 from threading import RLock
+import math
+import xml.etree.ElementTree as ET
 
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -28,10 +37,9 @@ DEFAULT_TOLERANCE_DEG = 8.0
 # one lets the solver trade millimetres of the point for orientation, which reads
 # as the gripper lurching when a pitch key is pressed.
 TURN_TOLERANCE_M = 0.002
-# A turn uses damped least squares on the tool point and tilt, because PyBullet IK
-# stops at the first point it likes and will give up millimetres of the point for
-# degrees of orientation. World-Z rotation is free: the five joints cannot hold
-# every orientation, and the pan axis leaves exactly that direction open.
+# A turn uses damped least squares on the tool point and tilt. World-Z rotation
+# is free: the five joints cannot hold every orientation, and the pan axis
+# leaves exactly that direction open.
 TURN_DAMPING = 0.05
 TURN_ROTATION_WEIGHT = 0.6
 TURN_MAX_STEP_DEG = 15.0
@@ -40,11 +48,18 @@ TURN_SETTLE_M = 0.0005
 TURN_SETTLE_DEG = 0.2
 _TURN_WEIGHTS = np.diag([1.0, 1.0, 1.0, TURN_ROTATION_WEIGHT,
                          TURN_ROTATION_WEIGHT, TURN_ROTATION_WEIGHT])
-# Phosphobot damps every movable joint and then selects IK_SDLS.
-_JOINT_DAMPING = 0.001
-_IK_ITERATIONS = 8
-_IK_MAX_NUM_ITERATIONS = 180
-_IK_RESIDUAL = 1e-6
+# Metres and radians share one residual. A smaller damping tracks the recorded
+# joint answers; a larger one stalls short of them.
+_IK_DAMPING = 1e-3
+# Same order as the recorded solver's rest-pose term. Position-only goals
+# leave two degrees free; this keeps wrist roll from drifting on a nudge
+# without dragging a reachable pose off the seed.
+_NULL_GAIN = 0.001
+_IK_INNER_ITERATIONS = 180
+_IK_MAX_STEP_RAD = 0.4
+# One metre of translation and one radian of rotation, matching the scale the
+# recorded solves traded off.
+_ORIENTATION_WEIGHT = 1.0
 # The jaw is not one of JOINTS. Pin it so IK cannot move the fingers' opening.
 _JAW = "gripper"
 # A bare point pins roll and pitch, not yaw: the pan carries the tool sideways and
@@ -88,8 +103,143 @@ class IKError(ValueError):
     """The solver could not reach the goal inside the bounds it was given."""
 
 
+@dataclass(frozen=True)
+class _Joint:
+    name: str
+    parent: str
+    child: str
+    origin: np.ndarray
+    axis: np.ndarray
+    movable: bool
+
+
+def _vec3(text: str | None) -> np.ndarray:
+    if not text:
+        return np.zeros(3)
+    values = np.array([float(part) for part in text.split()], dtype=float)
+    if values.shape != (3,):
+        raise ValueError(f"Expected 3 numbers, got {text!r}")
+    return values
+
+
+def _origin_matrix(element) -> np.ndarray:
+    matrix = np.eye(4)
+    if element is None:
+        return matrix
+    matrix[:3, :3] = Rotation.from_euler("xyz", _vec3(element.get("rpy"))).as_matrix()
+    matrix[:3, 3] = _vec3(element.get("xyz"))
+    return matrix
+
+
+def _rotvec(rotation: np.ndarray) -> np.ndarray:
+    """Axis-angle of a rotation matrix. The near-identity case is the skew vector."""
+    cosine = (float(rotation[0, 0] + rotation[1, 1] + rotation[2, 2]) - 1.0) * 0.5
+    if cosine > 0.999999:
+        return np.array([
+            (rotation[2, 1] - rotation[1, 2]) * 0.5,
+            (rotation[0, 2] - rotation[2, 0]) * 0.5,
+            (rotation[1, 0] - rotation[0, 1]) * 0.5,
+        ])
+    cosine = min(1.0, max(-1.0, cosine))
+    angle = math.acos(cosine)
+    sine = math.sin(angle)
+    if abs(sine) < 1e-8:
+        return Rotation.from_matrix(rotation).as_rotvec()
+    scale = angle / (2.0 * sine)
+    return np.array([
+        (rotation[2, 1] - rotation[1, 2]) * scale,
+        (rotation[0, 2] - rotation[2, 0]) * scale,
+        (rotation[1, 0] - rotation[0, 1]) * scale,
+    ])
+
+
+def _rodrigues(axis: np.ndarray, angle: float) -> np.ndarray:
+    """Rotation matrix about a unit axis. Scalar trig avoids a SciPy call per joint."""
+    x, y, z = (float(value) for value in axis)
+    cosine = math.cos(angle)
+    sine = math.sin(angle)
+    complement = 1.0 - cosine
+    return np.array([
+        [cosine + x * x * complement, x * y * complement - z * sine, x * z * complement + y * sine],
+        [y * x * complement + z * sine, cosine + y * y * complement, y * z * complement - x * sine],
+        [z * x * complement - y * sine, z * y * complement + x * sine, cosine + z * z * complement],
+    ])
+
+
+def _pose(rotation: np.ndarray, translation: np.ndarray) -> np.ndarray:
+    matrix = np.eye(4)
+    matrix[:3, :3] = rotation
+    matrix[:3, 3] = translation
+    return matrix
+
+
+def _load_chain(urdf: str) -> tuple[str, tuple[_Joint, ...]]:
+    """Joints in parent-before-child order. Link frames ignore visual meshes."""
+    root = ET.parse(urdf).getroot()
+    joints = []
+    for element in root.findall("joint"):
+        kind = element.get("type")
+        if kind not in {"revolute", "continuous", "fixed", "prismatic"}:
+            continue
+        parent = element.find("parent")
+        child = element.find("child")
+        if parent is None or child is None:
+            raise ValueError(f"Joint {element.get('name')} is missing a link")
+        axis_element = element.find("axis")
+        axis = _vec3(None if axis_element is None else axis_element.get("xyz"))
+        if kind == "prismatic":
+            raise ValueError(f"Prismatic joint {element.get('name')} is not supported")
+        movable = kind in {"revolute", "continuous"}
+        if movable:
+            norm = float(np.linalg.norm(axis))
+            if norm < 1e-8:
+                raise ValueError(f"Joint {element.get('name')} has no axis")
+            axis = axis / norm
+        joints.append(_Joint(
+            name=element.get("name") or "",
+            parent=parent.get("link"),
+            child=child.get("link"),
+            origin=_origin_matrix(element.find("origin")),
+            axis=axis,
+            movable=movable,
+        ))
+    children = {joint.child for joint in joints}
+    roots = {joint.parent for joint in joints} - children
+    if len(roots) != 1:
+        raise ValueError(f"URDF must have one base link, found {sorted(roots)}")
+    base = roots.pop()
+    ordered: list[_Joint] = []
+    pending = joints
+    known = {base}
+    while pending:
+        ready = [joint for joint in pending if joint.parent in known]
+        if not ready:
+            raise ValueError("URDF joints do not form a tree")
+        ordered.extend(ready)
+        known.update(joint.child for joint in ready)
+        pending = [joint for joint in pending if joint not in ready]
+    return base, tuple(ordered)
+
+
+def _dls(jacobian: np.ndarray, error: np.ndarray, q: np.ndarray, q_rest: np.ndarray) -> np.ndarray:
+    """Damped step plus a pull toward `q_rest` in the unused directions."""
+    width = jacobian.shape[1]
+    gram = jacobian.T @ jacobian + (_IK_DAMPING ** 2) * np.eye(width)
+    task = np.linalg.solve(gram, jacobian.T @ error)
+    projector = np.eye(width) - np.linalg.solve(gram, jacobian.T @ jacobian)
+    step = task + projector @ (_NULL_GAIN * (q_rest - q))
+    norm = float(np.linalg.norm(step))
+    if norm > _IK_MAX_STEP_RAD:
+        step *= _IK_MAX_STEP_RAD / norm
+    return step
+
+
 def _locked(method):
-    """Serialize calls that move the shared PyBullet model."""
+    """Serialize calls that move the shared joint state.
+
+    Status reads and keyboard motion run on different threads. A solve is many
+    chain evaluations and must not interleave with a read of the joints.
+    """
     @wraps(method)
     def run(self, *args, **kwargs):
         with self._lock:
@@ -99,88 +249,62 @@ def _locked(method):
 
 class Kinematics:
     def __init__(self, urdf: str, ee_tool_offset: float = 0.0):
-        import pybullet as p
-
         offset = float(ee_tool_offset)
         if not np.isfinite(offset):
             raise ValueError("ee_tool_offset must be finite")
         # Metres along gripper_frame_link +Z. Positive follows the blue axis.
         self.ee_tool_offset = offset
-        self._bullet = p
-        # One PyBullet client, but status reads and keyboard motion run on
-        # different threads. A solve is many model calls and must not interleave
-        # with a read of the joints.
         self._lock = RLock()
-        self._client = p.connect(p.DIRECT)
-        try:
-            # Meshes are not part of the frame. Leave the fixed gripper_frame_joint
-            # unmerged so its rpy stays the gripper frame in the URDF.
-            flags = (p.URDF_MAINTAIN_LINK_ORDER | p.URDF_IGNORE_VISUAL_SHAPES
-                     | p.URDF_IGNORE_COLLISION_SHAPES)
-            self._body = p.loadURDF(
-                urdf, basePosition=[0.0, 0.0, 0.0], baseOrientation=[0.0, 0.0, 0.0, 1.0],
-                useFixedBase=True, flags=flags, physicsClientId=self._client)
-            self._joint_index, self._joint_name, self._revolute = {}, {}, []
-            self._ee_link = self._gripper_link = None
-            for index in range(p.getNumJoints(self._body, physicsClientId=self._client)):
-                info = p.getJointInfo(self._body, index, physicsClientId=self._client)
-                name = info[1].decode()
-                child = info[12].decode()
-                self._joint_name[index] = name
-                self._joint_index[name] = index
-                if info[2] == p.JOINT_REVOLUTE:
-                    self._revolute.append(index)
-                if child == "gripper_frame_link":
-                    self._ee_link = index
-                elif child == "gripper_link":
-                    self._gripper_link = index
-            missing = [name for name in (*JOINTS, _JAW) if name not in self._joint_index]
-            if missing or self._ee_link is None or self._gripper_link is None:
-                raise ValueError(f"URDF is missing kinematics frames: {missing or 'gripper links'}")
-            # Jacobian columns follow movable-DoF order, not joint indices.
-            self._arm_dof = [self._revolute.index(self._joint_index[name]) for name in JOINTS]
-        except Exception:
-            self.close()
-            raise
-
-    @_locked
-    def close(self) -> None:
-        client = getattr(self, "_client", None)
-        if client is None:
-            return
-        self._client = None
-        if self._bullet.isConnected(client):
-            self._bullet.disconnect(client)
-
-    def __del__(self):
-        try:
-            self.close()
-        except Exception:
-            pass
-
-    def _set_joints(self, state: dict[str, float]) -> None:
+        _base, chain = _load_chain(urdf)
+        by_name = {joint.name: joint for joint in chain}
+        missing = [name for name in (*JOINTS, _JAW) if name not in by_name]
+        frames = {joint.child for joint in chain}
+        if missing or "gripper_frame_link" not in frames or "gripper_link" not in frames:
+            raise ValueError(f"URDF is missing kinematics frames: {missing or 'gripper links'}")
+        arm = []
         for name in JOINTS:
-            self._bullet.resetJointState(
-                self._body, self._joint_index[name], float(np.deg2rad(state[name])),
-                physicsClientId=self._client)
-        for index in self._revolute:
-            if self._joint_name[index] not in JOINTS:
-                self._bullet.resetJointState(self._body, index, 0.0, physicsClientId=self._client)
+            joint = by_name[name]
+            if not joint.movable:
+                raise ValueError(f"{name} is not a revolute joint")
+            arm.append((joint.origin[:3, :3].copy(), joint.origin[:3, 3].copy(), joint.axis.copy()))
+        self._arm = tuple(arm)
+        fixed = by_name.get("gripper_frame_joint")
+        if fixed is None or fixed.parent != "gripper_link" or fixed.movable:
+            raise ValueError("URDF is missing the fixed gripper frame")
+        self._fixed_rotation = fixed.origin[:3, :3].copy()
+        self._fixed_translation = fixed.origin[:3, 3].copy()
+        self._ee = np.eye(4)
+        self._link = np.eye(4)
 
-    def _link_pose(self, link: int) -> np.ndarray:
-        """World link frame, not the centre of mass. Quaternion is xyzw."""
-        state = self._bullet.getLinkState(
-            self._body, link, computeForwardKinematics=1, physicsClientId=self._client)
-        pose = np.eye(4)
-        pose[:3, :3] = Rotation.from_quat(state[5]).as_matrix()
-        pose[:3, 3] = state[4]
-        return transform(pose)
+    def close(self) -> None:
+        return None
+
+    def _remember(self, degrees: np.ndarray):
+        """Store gripper_link and gripper_frame_link for `degrees`."""
+        radians = np.deg2rad(np.asarray(degrees, dtype=float))
+        rotation = np.eye(3)
+        translation = np.zeros(3)
+        axes = np.empty((len(JOINTS), 3))
+        pivots = np.empty((len(JOINTS), 3))
+        for index, (origin_rotation, origin_translation, axis) in enumerate(self._arm):
+            placed_rotation = rotation @ origin_rotation
+            placed_translation = rotation @ origin_translation + translation
+            world_axis = placed_rotation @ axis
+            axes[index] = world_axis
+            pivots[index] = placed_translation
+            rotation = placed_rotation @ _rodrigues(axis, float(radians[index]))
+            translation = placed_translation
+        self._link = _pose(rotation, translation)
+        ee_rotation = rotation @ self._fixed_rotation
+        ee_translation = rotation @ self._fixed_translation + translation
+        self._ee = _pose(ee_rotation, ee_translation)
+        return axes, pivots, ee_rotation, ee_translation
 
     @_locked
     def fk(self, state: dict[str, float]) -> np.ndarray:
         """4x4 pose of gripper_frame_link in the base frame."""
-        self._set_joints({name: float(state[name]) for name in JOINTS})
-        return self._link_pose(self._ee_link)
+        self._remember([float(state[name]) for name in JOINTS])
+        return transform(self._ee)
 
     def tool_point(self, pose: np.ndarray) -> np.ndarray:
         """Point `ee_tool_offset` along gripper_frame +Z."""
@@ -196,79 +320,89 @@ class Kinematics:
     @_locked
     def gripper_link(self) -> np.ndarray:
         """gripper_link from the model last updated by fk()."""
-        return self._link_pose(self._gripper_link)
+        return transform(self._link)
 
-    def _ik_bounds(self, lower_deg, upper_deg, rest_deg):
-        by_name = {name: (lower_deg[i], upper_deg[i], rest_deg[i]) for i, name in enumerate(JOINTS)}
-        lower, upper, ranges, rest = [], [], [], []
-        for index in self._revolute:
-            name = self._joint_name[index]
-            if name in by_name:
-                low, high, seed = (float(np.deg2rad(value)) for value in by_name[name])
-            else:
-                low = high = seed = 0.0
-            lower.append(low)
-            upper.append(high)
-            ranges.append(high - low)
-            rest.append(seed)
-        return lower, upper, ranges, rest
-
-    def _arm_degrees(self, positions) -> np.ndarray:
-        positions = list(positions)
-        if len(positions) == len(self._revolute):
-            by_index = dict(zip(self._revolute, positions))
-        elif len(positions) == len(self._joint_index):
-            by_index = dict(enumerate(positions))
-        else:
-            raise RuntimeError(
-                f"PyBullet IK returned {len(positions)} joints, expected {len(self._revolute)}")
-        return np.rad2deg([by_index[self._joint_index[name]] for name in JOINTS])
+    def _jacobian(self, degrees: np.ndarray):
+        """Tool-point Jacobian at `degrees`, in joint order. Also the link pose."""
+        axes, pivots, ee_rotation, ee_translation = self._remember(degrees)
+        point = ee_translation + ee_rotation @ np.array([0.0, 0.0, self.ee_tool_offset])
+        linear = np.empty((3, len(JOINTS)))
+        for column in range(len(JOINTS)):
+            axis = axes[column]
+            offset = point - pivots[column]
+            linear[0, column] = axis[1] * offset[2] - axis[2] * offset[1]
+            linear[1, column] = axis[2] * offset[0] - axis[0] * offset[2]
+            linear[2, column] = axis[0] * offset[1] - axis[1] * offset[0]
+        return linear, axes.T, point, self._ee
 
     def _inverse(self, seed_deg, lower_deg, upper_deg, tool_target, rotation,
                  tolerance_m: float, *, lock_orientation: bool) -> np.ndarray:
-        """PyBullet IK for the link origin that puts the tool point on `tool_target`.
+        """Joint degrees that put the tool point on `tool_target`.
 
-        A locked orientation fixes both the link target and the quaternion, so one
-        solve is enough. Without it, the offset direction is taken from the pose
-        each pass just reached.
+        A locked orientation is a second task on the gripper frame. An unlocked
+        one leaves that rotation free, which is how a distant point stays reachable
+        on a five-joint arm.
         """
-        tool_target = np.asarray(tool_target, dtype=float)
-        guess = np.array(rotation, dtype=float)
-        damping = [_JOINT_DAMPING] * len(self._revolute)
-        current = np.asarray(seed_deg, dtype=float).copy()
-        best = current.copy()
-        best_error = np.inf
-        for _ in range(_IK_ITERATIONS):
-            self._set_joints(dict(zip(JOINTS, current)))
-            link_target = tool_target - guess @ np.array([0.0, 0.0, self.ee_tool_offset])
-            lower, upper, ranges, rest = self._ik_bounds(lower_deg, upper_deg, current)
-            solve = dict(
-                lowerLimits=lower, upperLimits=upper, jointRanges=ranges, restPoses=rest,
-                maxNumIterations=_IK_MAX_NUM_ITERATIONS, residualThreshold=_IK_RESIDUAL,
-                jointDamping=damping, solver=self._bullet.IK_SDLS,
-                physicsClientId=self._client)
-            target = link_target.tolist()
-            if lock_orientation:
-                positions = self._bullet.calculateInverseKinematics(
-                    self._body, self._ee_link, target, Rotation.from_matrix(guess).as_quat().tolist(),
-                    **solve)
-            else:
-                positions = self._bullet.calculateInverseKinematics(
-                    self._body, self._ee_link, target, **solve)
-            current = np.clip(self._arm_degrees(positions), lower_deg, upper_deg)
-            self._set_joints(dict(zip(JOINTS, current)))
-            pose = self._link_pose(self._ee_link)
+        target = np.asarray(tool_target, dtype=float)
+        goal = np.asarray(rotation, dtype=float)
+        q = np.deg2rad(np.asarray(seed_deg, dtype=float))
+        lower = np.deg2rad(np.asarray(lower_deg, dtype=float))
+        upper = np.deg2rad(np.asarray(upper_deg, dtype=float))
+        q = np.clip(q, lower, upper)
+        rest = q.copy()
+        best = q.copy()
+        best_cost = np.inf
+
+        tool_offset = np.array([0.0, 0.0, self.ee_tool_offset])
+        orient_limit = math.radians(0.2)
+        # A step that is already on the point does not need the last fraction of
+        # a millimetre. Chasing it spends the wrist on a weak singular direction.
+        position_limit = tolerance_m if tolerance_m < 0.005 else 0.002
+
+        def cost_at(radians):
+            _axes, _pivots, rotation, translation = self._remember(np.rad2deg(radians))
+            point = translation + rotation @ tool_offset
+            position_error = float(np.linalg.norm(target - point))
             if not lock_orientation:
-                guess = pose[:3, :3]
-            error = float(np.linalg.norm(self.tool_point(pose) - tool_target))
-            if error < best_error:
-                best_error = error
-                best = current.copy()
+                return position_error, position_error, 0.0
+            orient = float(np.linalg.norm(_rotvec(goal @ rotation.T)))
+            return position_error + orient, position_error, orient
+
+        def residual_at(radians):
+            linear, angular, point, pose = self._jacobian(np.rad2deg(radians))
+            position = target - point
+            if lock_orientation:
+                angular_error = _rotvec(goal @ pose[:3, :3].T)
+                residual = np.concatenate((position, _ORIENTATION_WEIGHT * angular_error))
+                jacobian = np.vstack((linear, _ORIENTATION_WEIGHT * angular))
             else:
+                residual = position
+                jacobian = linear
+            return jacobian, residual
+
+        for _ in range(_IK_INNER_ITERATIONS):
+            cost, position_error, orient = cost_at(q)
+            if cost < best_cost:
+                best_cost = cost
+                best = q.copy()
+            if position_error <= position_limit and orient <= orient_limit:
+                best = q.copy()
                 break
-            if error <= tolerance_m:
+            jacobian, residual = residual_at(q)
+            step = _dls(jacobian, residual, q, rest)
+            accepted = None
+            for shrink in range(8):
+                trial = np.clip(q + step * (0.5 ** shrink), lower, upper)
+                if np.allclose(trial, q, atol=1e-8):
+                    break
+                trial_cost, _position, _orient = cost_at(trial)
+                if trial_cost < cost:
+                    accepted = trial
+                    break
+            if accepted is None:
                 break
-        return best
+            q = accepted
+        return np.rad2deg(best)
 
     def _attempt(self, seed, lower, upper, goal, rotation, tolerance_m, *,
                  allow_position_only: bool):
@@ -315,20 +449,8 @@ class Kinematics:
 
     def _tcp_jacobian(self, angles):
         """Tool-point linear and angular Jacobians, and the pose they came from."""
-        positions = [0.0] * len(self._revolute)
-        for column, value in zip(self._arm_dof, angles):
-            positions[column] = float(np.deg2rad(value))
-        for index, value in zip(self._revolute, positions):
-            self._bullet.resetJointState(self._body, index, value,
-                                         physicsClientId=self._client)
-        linear, angular = self._bullet.calculateJacobian(
-            self._body, self._ee_link, [0.0, 0.0, self.ee_tool_offset],
-            positions, [0.0] * len(positions), [0.0] * len(positions),
-            physicsClientId=self._client)
-        pose = self._link_pose(self._ee_link)
-        return (np.asarray(linear)[:, self._arm_dof],
-                np.asarray(angular)[:, self._arm_dof],
-                self.tool_point(pose), pose[:3, :3])
+        linear, angular, point, pose = self._jacobian(np.asarray(angles, dtype=float))
+        return linear, angular, point, pose[:3, :3]
 
     def _turn_ik(self, seed, goal, rotation, lower, upper, tolerance_m):
         """Hold the tool point while the tool turns, or None if it cannot.

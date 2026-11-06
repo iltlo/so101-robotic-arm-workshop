@@ -1,5 +1,5 @@
 # Sources and attribution
 
-- [PyBullet](https://pybullet.org/) (zlib) is the kinematics library on the participant path. The servo bus uses [feetech-servo-sdk](https://pypi.org/project/feetech-servo-sdk/) (the Waveshare/Feetech STS protocol library).
+- Kinematics is computed in this repository from the URDF. The servo bus uses [feetech-servo-sdk](https://pypi.org/project/feetech-servo-sdk/) (the Waveshare/Feetech STS protocol library).
 - [TheRobotStudio SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100), Apache-2.0, commit `a758567c3978dfeefe282ede0500085a48fe8f78`. Setup downloads their original SO-101 follower URDF and meshes, plus `LICENSE.upstream`, into `assets/SO101/`. The URDF is generated from Onshape CAD via `onshape-to-robot` according to upstream. Keep that license with any redistributed assets.
 - `reference/dobot-robotic-arm-workshop/` is historical workshop material with no obvious local origin/license notice. None of its code, numerical station calibrations, scripts, or tag mount constants is copied into `src/`; retain that folder only as a reference pending provenance review.

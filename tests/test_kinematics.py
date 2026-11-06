@@ -21,10 +21,13 @@ from so101_utils.model import (
 # 1e-8 m and 1e-5 deg; these bounds are that rounding, not a frame change.
 FK_POSITION_TOL_M = 1e-5
 FK_ROTATION_TOL_DEG = 1e-4
-# Joint answers recorded from this PyBullet solver. A later change that picks
-# another configuration, such as an elbow flip, fails this. The 5 mm step was
-# within 7 deg of converged PlaCo, and the downward click within 11 deg.
-# PlaCo's soft solve of the known pose left that family (about 42 deg at the lift).
+# Joint answers of this solver, and the PyBullet answers they replace.
+# The known pose is checked against the joints that generated it. PyBullet
+# stopped at [14.9980, 0.5335, -1.2774, -19.2381, 24.9915], 1.3 deg short
+# on the elbow. The 5 mm step and the downward click have no single answer on
+# a five-joint arm; PyBullet's are the second array. This solver stays in that
+# family: within 7 deg on the step and 11 deg on the click. PlaCo's soft solve
+# of the known pose left the family (about 42 deg at the lift) and still fails.
 IK_JOINT_TOL_DEG = 0.2
 
 URDF = Path(__file__).parents[1] / "assets/SO101/so101_new_calib.urdf"
@@ -388,7 +391,9 @@ def test_ik_stays_near_the_recorded_configuration(kin):
         cases = [(
             seed, kin.tool_point(matrix),
             {"rpy": tuple(float(angle) for angle in rpy)},
+            np.array([15.0, 0.0, 0.0, -20.0, 25.0]),
             np.array([14.9980, 0.5335, -1.2774, -19.2381, 24.9915]),
+            2.0,
         )]
         start = {
             "shoulder_pan": 0.0, "shoulder_lift": -90.0, "elbow_flex": 90.0,
@@ -397,20 +402,25 @@ def test_ik_stays_near_the_recorded_configuration(kin):
         pose = kin.fk(start)
         cases.append((
             start, kin.tool_point(pose) + np.array([0.005, 0.0, 0.0]), {},
+            np.array([-0.0000, -83.5025, 88.8648, 39.6377, 0.0000]),
             np.array([0.0, -87.8258, 89.5194, 43.2864, 0.0]),
+            7.0,
         ))
         cases.append((
             seed, np.array([0.28, -0.05, 0.04]), {"downward": True},
+            np.array([11.2623, 35.9458, -37.0912, 91.1456, 14.0516]),
             np.array([11.2604, 30.3480, -26.8648, 86.4439, 14.0504]),
+            11.0,
         ))
-        for joints, target, options, reference in cases:
+        for joints, target, options, reference, pybullet, family_deg in cases:
             solved = kin.position_ik(joints, target, limits, **options)
             reached = kin.fk(solved)
             assert np.linalg.norm(kin.tool_point(reached) - target) < 0.015
             if options.get("downward"):
                 assert reached[2, 0] < -0.95
-            delta = [abs(solved[name] - reference[index]) for index, name in enumerate(JOINTS)]
-            assert max(delta) <= IK_JOINT_TOL_DEG
+            got = np.array([solved[name] for name in JOINTS])
+            assert max(abs(got - reference)) <= IK_JOINT_TOL_DEG
+            assert max(abs(got - pybullet)) <= family_deg
     finally:
         kin.ee_tool_offset = previous
 

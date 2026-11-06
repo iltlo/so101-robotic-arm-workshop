@@ -12,7 +12,6 @@ dependencies = [
     "scipy>=1.14",
     "PyYAML>=6",
     "opencv-python-headless>=4.11,<4.14",
-    "pybullet>=3.2.6",
     "fastapi>=0.115",
     "uvicorn>=0.32",
     "pyserial>=3.5,<4",

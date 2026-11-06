@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12, <3.14"
 
 [[package]]
@@ -342,12 +342,6 @@ wheels = [
 ]
 
 [[package]]
-name = "pybullet"
-version = "3.2.7"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/de/95/b9a98cd4ed948d4f25a7d0b13cb0c1f87e58dc6d113be9e18940641eb25f/pybullet-3.2.7.tar.gz", hash = "sha256:042879db8d101ac7590dee475fc6aded508b85fe1273fdbbfde1d88bd200e14f", size = 80508379, upload-time = "2025-01-30T00:34:00.527Z" }
-
-[[package]]
 name = "pydantic"
 version = "2.14.2"
 source = { registry = "https://pypi.org/simple" }
@@ -652,7 +646,6 @@ dependencies = [
     { name = "opencv-python-headless" },
     { name = "paho-mqtt" },
     { name = "pupil-apriltags" },
-    { name = "pybullet" },
     { name = "pyserial" },
     { name = "pyyaml" },
     { name = "rerun-sdk" },
@@ -682,7 +675,6 @@ requires-dist = [
     { name = "opencv-python-headless", specifier = ">=4.11,<4.14" },
     { name = "paho-mqtt", specifier = ">=2.1" },
     { name = "pupil-apriltags", specifier = ">=1.0.4" },
-    { name = "pybullet", specifier = ">=3.2.6" },
     { name = "pynput", marker = "extra == 'twin'", specifier = ">=1.7.8,<1.9" },
     { name = "pyrealsense2", marker = "extra == 'vision'" },
     { name = "pyserial", specifier = ">=3.5,<4" },
