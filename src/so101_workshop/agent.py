@@ -18,7 +18,7 @@ from so101_utils.assets import assets_ready, ensure_assets
 from so101_utils import config as station_config
 from so101_utils.auto_hand_eye import DWELL_S, calibration_poses
 from so101_utils.camera import camera_backend, list_video_devices
-from so101_utils.click_app import click_target, select_box
+from so101_utils.click_app import box_centre, click_target, select_box
 from so101_utils.config import (
     load_camera,
     load_hand_eye,
@@ -28,6 +28,7 @@ from so101_utils.config import (
 from so101_utils.hand_eye_flow import record_sample
 from so101_utils.intrinsics import WORKSHOP_MIN_VIEWS, capture_chessboard, find_chessboard, solve_captured
 from so101_utils.moves import (
+    APPROACH_M,
     CLICK_TOOL_OFFSET_M,
     HOVER_M,
     PICK_HEIGHT_M,
@@ -488,27 +489,10 @@ class Agent:
         return self.submit(job)
 
     def click(self, x: int, y: int):
-        self._require_motion()
-        if self.cam is None:
-            raise RuntimeError("Camera is not connected")
-        token = self._bump()
-        pixel = (int(x), int(y))
-
-        def job():
-            if token != self._move_token:
-                return {"status": "replaced"}
-            self._require_motion()
-            self._use_tool(CLICK_TOOL_OFFSET_M)
-            self._check_pixel(pixel)
-            hand = load_hand_eye()
-            target = click_target(pixel, self.cam.intrinsics, hand["base_T_camera"], HOVER_M)
-            arrived = go_to(self.arm, _Reporter(self, token), target)
-            return {
-                "status": "arrived" if arrived else "replaced",
-                "target": [float(value) for value in target],
-            }
-
-        return self.submit(job)
+        return self._move_to_pixel(
+            x, y, tool_offset=CLICK_TOOL_OFFSET_M, height_m=HOVER_M,
+            move=go_to, done="arrived",
+        )
 
     def pick_box(self, index: int):
         self._require_motion()
@@ -518,15 +502,8 @@ class Agent:
         boxes = snapshot["boxes"]
         if index < 0 or index >= len(boxes):
             raise ValueError("That detection is no longer in the list")
-        box = boxes[index]
-        resolution = snapshot["resolution"] or [
-            self.cam.intrinsics.width, self.cam.intrinsics.height,
-        ]
-        cx = (box["x1"] + box["x2"]) / 2.0
-        cy = (box["y1"] + box["y2"]) / 2.0
-        sx = self.cam.intrinsics.width / float(resolution[0])
-        sy = self.cam.intrinsics.height / float(resolution[1])
-        return self._pick_pixel(int(cx * sx), int(cy * sy))
+        centre = box_centre(boxes[index], snapshot["resolution"], self.cam.intrinsics)
+        return self._pick_pixel(*centre)
 
     def click_pick(self, x: int, y: int) -> dict:
         """Pick at the clicked table point, then return to rest and open."""
@@ -986,6 +963,11 @@ class Agent:
             "hand_eye_samples": [_sample_xyz(sample) for sample in self._hand_samples],
             "detections": self.detections.snapshot(),
             "viewer": self.viewer_status(),
+            "motion": {
+                "hover_m": HOVER_M,
+                "pick_height_m": PICK_HEIGHT_M,
+                "approach_m": APPROACH_M,
+            },
         }
         try:
             self.hook.on_status(body)
@@ -1302,6 +1284,16 @@ class Agent:
             time.sleep(0.03)
 
     def _pick_pixel(self, x: int, y: int):
+        return self._move_to_pixel(
+            x, y, tool_offset=PICK_TOOL_OFFSET_M, height_m=PICK_HEIGHT_M,
+            move=pick_and_return, done="picked",
+        )
+
+    def _move_to_pixel(self, x: int, y: int, *, tool_offset, height_m, move, done):
+        """Send one click ray to the table. A newer click replaces this one."""
+        self._require_motion()
+        if self.cam is None:
+            raise RuntimeError("Camera is not connected")
         token = self._bump()
         pixel = (int(x), int(y))
 
@@ -1309,13 +1301,15 @@ class Agent:
             if token != self._move_token:
                 return {"status": "replaced"}
             self._require_motion()
-            self._use_tool(PICK_TOOL_OFFSET_M)
+            self._use_tool(tool_offset)
             self._check_pixel(pixel)
             hand = load_hand_eye()
-            target = click_target(pixel, self.cam.intrinsics, hand["base_T_camera"], PICK_HEIGHT_M)
-            arrived = pick_and_return(self.arm, _Reporter(self, token), target)
+            target = click_target(
+                pixel, self.cam.intrinsics, hand["base_T_camera"], height_m,
+            )
+            arrived = move(self.arm, _Reporter(self, token), target)
             return {
-                "status": "picked" if arrived else "replaced",
+                "status": done if arrived else "replaced",
                 "target": [float(value) for value in target],
             }
 

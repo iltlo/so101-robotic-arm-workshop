@@ -41,6 +41,20 @@ def create_app(agent: Agent | None = None, *, listen: bool = False, viewer: bool
         if feature != "estop" and not agent.features.get(feature, True):
             raise HTTPException(status_code=404, detail=f"{feature} is disabled")
 
+    def pixels(body: dict) -> tuple[int, int]:
+        if body.get("x") is None or body.get("y") is None:
+            raise HTTPException(status_code=400, detail="Click needs x and y pixels")
+        try:
+            return int(body["x"]), int(body["y"])
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="Click needs x and y pixels") from exc
+
+    def pixel_move(body: dict, features: tuple[str, ...], method):
+        for feature in features:
+            require(feature)
+        x, y = pixels(body)
+        return call(lambda: method(x, y))
+
     @app.get("/")
     def index():
         return FileResponse(STATIC / "index.html")
@@ -164,17 +178,11 @@ def create_app(agent: Agent | None = None, *, listen: bool = False, viewer: bool
 
     @app.post("/api/click")
     def click(body: dict):
-        require("click_and_go")
-        if "x" not in body or "y" not in body:
-            raise HTTPException(status_code=400, detail="Click needs x and y pixels")
-        return call(lambda: agent.click(int(body["x"]), int(body["y"])))
+        return pixel_move(body, ("click_and_go",), agent.click)
 
     @app.post("/api/click-pick")
     def click_pick(body: dict):
-        require("click_and_go")
-        if "x" not in body or "y" not in body:
-            raise HTTPException(status_code=400, detail="Click needs x and y pixels")
-        return call(lambda: agent.click_pick(int(body["x"]), int(body["y"])))
+        return pixel_move(body, ("click_and_go",), agent.click_pick)
 
     @app.get("/api/detections")
     def detections():
@@ -191,12 +199,7 @@ def create_app(agent: Agent | None = None, *, listen: bool = False, viewer: bool
 
     @app.post("/api/detect-pick")
     def detect_pick(body: dict):
-        require("click_and_go")
-        if not agent.features.get("yolo", True):
-            raise HTTPException(status_code=404, detail="yolo is disabled")
-        if "x" not in body or "y" not in body:
-            raise HTTPException(status_code=400, detail="Click needs x and y pixels")
-        return call(lambda: agent.detect_pick(int(body["x"]), int(body["y"])))
+        return pixel_move(body, ("click_and_go", "yolo"), agent.detect_pick)
 
     @app.post("/api/calibrate/ports/mark")
     def mark_ports():

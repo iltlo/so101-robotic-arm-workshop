@@ -8,6 +8,8 @@ import json
 
 import cv2
 
+from so101_utils.moves import HOVER_M
+
 
 PAGE = """<!doctype html><html lang="en"><meta charset="utf-8">
 <title>SO-101 __TITLE__</title>
@@ -30,23 +32,25 @@ setInterval(refresh,180);refresh();
 image.addEventListener('click',async event=>{
 if(!image.naturalWidth||!image.naturalHeight){result.textContent='Camera image is not ready';return;}
 const rect=image.getBoundingClientRect();
-const x=Math.floor((event.clientX-rect.left)*image.naturalWidth/rect.width);
-const y=Math.floor((event.clientY-rect.top)*image.naturalHeight/rect.height);
+const x=Math.round((event.clientX-rect.left)*image.naturalWidth/rect.width);
+const y=Math.round((event.clientY-rect.top)*image.naturalHeight/rect.height);
 try{const response=await fetch('/click',{method:'POST',headers:{'Content-Type':'application/json'},
 body:JSON.stringify({x,y})});result.textContent=(await response.json()).message;
 }catch(e){result.textContent='Could not send click';}});</script></html>"""
 
 
-_DEFAULT_TEXT = (
-    "Click a point on the table. The arm moves to that spot on the base plane (z = 0), "
-    "stopping 2 cm above it. A new click takes over from one that is still moving."
-)
+def _default_text() -> str:
+    return (
+        "Click a point on the table. The arm moves to that spot on the base plane (z = 0), "
+        f"stopping {HOVER_M * 1000:.0f} mm above it. "
+        "A new click takes over from one that is still moving."
+    )
 
 
 class ClickView:
     def __init__(self, width, height, *, title="Click and go", text=None):
         self.width, self.height = width, height
-        self._page = PAGE.replace("__TITLE__", title).replace("__TEXT__", text or _DEFAULT_TEXT).encode()
+        self._page = PAGE.replace("__TITLE__", title).replace("__TEXT__", text or _default_text()).encode()
         self._lock = Lock()
         self._frame = None
         self._pending = None

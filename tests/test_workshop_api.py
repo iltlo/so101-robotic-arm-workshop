@@ -31,11 +31,17 @@ def test_run_help_exits_cleanly():
 
 
 def test_status_starts_disconnected(client):
+    from so101_utils.moves import APPROACH_M, HOVER_M, PICK_HEIGHT_M
     body = client.get("/api/status").json()
     assert body["arm"]["connected"] is False
     assert body["estop"] is False
     assert body["instructor"]["enabled"] is False
     assert client.get("/api/instructor").json()["enabled"] is False
+    assert body["motion"] == {
+        "hover_m": HOVER_M,
+        "pick_height_m": PICK_HEIGHT_M,
+        "approach_m": APPROACH_M,
+    }
 
 
 def test_status_reuses_the_camera_catalog(client, monkeypatch):

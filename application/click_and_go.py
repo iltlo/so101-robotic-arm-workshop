@@ -10,7 +10,7 @@ cannot forward clicks on its image. --mock still needs the camera.
 
 from so101_control import SO101
 from so101_utils.camera import open_camera
-from so101_utils.click_app import attach_camera, click_target, frame_viewer, read_frame
+from so101_utils.click_app import attach_camera, click_target, frame_viewer, run_click_loop
 from so101_utils.click_view import ClickView
 from so101_utils.config import arm_parser, load_hand_eye, load_robot
 from so101_utils.moves import CLICK_TOOL_OFFSET_M as EE_TOOL_OFFSET_M
@@ -40,25 +40,10 @@ if __name__ == "__main__":
         attach_camera(arm, cam, view, show)
         print("Going to rest.")
         ready(arm, view)
-        try:
-            while True:
-                read_frame(cam, view, show)
-                click = view.consume()
-                if click is None:
-                    continue
-                try:
-                    target = click_target(click, cam.intrinsics, hand["base_T_camera"], HOVER_M)
-                except ValueError as exc:
-                    view.report(str(exc))
-                    print(exc)
-                    continue
-                print(f"hover {target}")
-                try:
-                    go_to(arm, view, target)
-                except (ValueError, RuntimeError) as exc:
-                    view.report(str(exc))
-                    print(exc)
-        except KeyboardInterrupt:
-            print("Stopped.")
-        finally:
-            view.close()
+
+        def on_click(click):
+            target = click_target(click, cam.intrinsics, hand["base_T_camera"], HOVER_M)
+            print(f"hover {target}")
+            go_to(arm, view, target)
+
+        run_click_loop(cam, view, show, on_click)

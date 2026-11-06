@@ -507,6 +507,27 @@ def test_calibration_routes_do_not_touch_station_files(client, monkeypatch, tmp_
     assert "4" in short.json()["detail"]
 
 
+def test_click_pick_follows_click_and_go_and_detect_also_needs_yolo(client):
+    client.post("/api/arm/connect", json={"mock": True})
+    agent = client.agent
+    agent.features["yolo"] = False
+    refused_detect = client.post("/api/detect-pick", json={"x": 1, "y": 1})
+    assert refused_detect.status_code == 404
+    assert "yolo" in refused_detect.json()["detail"]
+    assert client.post("/api/pick", json={"index": 0}).status_code == 404
+    # Click and pick does not read boxes, so turning YOLO off leaves it available.
+    missing_camera = client.post("/api/click-pick", json={"x": 1, "y": 1})
+    assert missing_camera.status_code == 400
+    assert "Camera" in missing_camera.json()["detail"]
+
+    agent.features["yolo"] = True
+    agent.features["click_and_go"] = False
+    for path in ("/api/click", "/api/click-pick", "/api/detect-pick"):
+        blocked = client.post(path, json={"x": 1, "y": 1})
+        assert blocked.status_code == 404, path
+        assert "click_and_go" in blocked.json()["detail"]
+
+
 def test_flags_keep_estop_and_block_the_rest(monkeypatch):
     agent = Agent()
     agent.features["teleop"] = False

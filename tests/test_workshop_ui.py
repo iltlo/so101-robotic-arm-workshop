@@ -27,6 +27,39 @@ def station(tmp_path, monkeypatch):
     return config
 
 
+def test_page_features_match_the_routes():
+    """Each task tab lists the same flags the API checks before it moves."""
+    text = PAGE.read_text()
+    block = text.split("const PAGE_FEATURE = {", 1)[1].split("};", 1)[0]
+    found = {
+        name: re.findall(r'"([^"]+)"', body)
+        for name, body in re.findall(r"(\w+):\s*\[([^\]]*)\]", block)
+    }
+    assert found["go"] == ["click_and_go"]
+    assert found["pick"] == ["click_and_go"]
+    assert found["detect"] == ["click_and_go", "yolo"]
+    assert "yolo" not in found["pick"]
+    from so101_workshop.agent import _FEATURES
+    used = {name for names in found.values() for name in names}
+    assert used <= set(_FEATURES)
+
+
+def test_click_pages_round_pixels_the_same_way():
+    from so101_utils.click_view import PAGE as click_page
+    workshop = re.sub(r"\s+", "", PAGE.read_text())
+    script = re.sub(r"\s+", "", click_page)
+    formula = "Math.round((event.clientX-rect.left)*"
+    assert formula + "live.naturalWidth/rect.width)" in workshop
+    assert formula + "image.naturalWidth/rect.width)" in script
+
+
+def test_task_hints_come_from_status_motion():
+    text = PAGE.read_text()
+    assert 'id="go-clearance"' in text
+    assert 'id="pick-summary"' in text
+    assert "status.motion" in text or "renderMotion(status.motion)" in text
+
+
 def test_script_references_only_existing_elements():
     text = PAGE.read_text()
     ids = set(re.findall(r'\bid="([^"]+)"', text))

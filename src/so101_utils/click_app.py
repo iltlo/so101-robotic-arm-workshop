@@ -44,16 +44,35 @@ def click_target(click, intrinsics, base_T_camera, height_m) -> np.ndarray:
     return point + plane["normal"] * height_m
 
 
+def _detection_scale(resolution, intrinsics):
+    """Camera-frame size and detection-frame size, as floats.
+
+    A missing detection resolution means the boxes are already in camera pixels.
+    """
+    width = float(intrinsics.width)
+    height = float(intrinsics.height)
+    if resolution:
+        res_x, res_y = (float(value) for value in resolution)
+    else:
+        res_x, res_y = width, height
+    return width, height, res_x, res_y
+
+
+def box_centre(box, resolution, intrinsics) -> tuple[int, int]:
+    """Box centre mapped from detection pixels into the camera frame."""
+    width, height, res_x, res_y = _detection_scale(resolution, intrinsics)
+    return (
+        int((box["x1"] + box["x2"]) / 2.0 * width / res_x),
+        int((box["y1"] + box["y2"]) / 2.0 * height / res_y),
+    )
+
+
 def select_box(click, boxes, resolution, intrinsics):
     """The smallest detection box under a click, its index, and its centre pixel.
 
     Boxes use the detection resolution, which can differ from the camera frame.
     """
-    width = float(intrinsics.width)
-    height = float(intrinsics.height)
-    res_x, res_y = (
-        (float(value) for value in resolution) if resolution else (width, height)
-    )
+    width, height, res_x, res_y = _detection_scale(resolution, intrinsics)
     x = click[0] * res_x / width
     y = click[1] * res_y / height
     found = None
@@ -67,8 +86,27 @@ def select_box(click, boxes, resolution, intrinsics):
     if found is None:
         raise ValueError("Click inside a detection box to pick that object")
     _, index, box = found
-    centre = (
-        int((box["x1"] + box["x2"]) / 2.0 * width / res_x),
-        int((box["y1"] + box["y2"]) / 2.0 * height / res_y),
-    )
-    return index, box, centre
+    return index, box, box_centre(box, resolution, intrinsics)
+
+
+def run_click_loop(cam, view, show, on_click) -> None:
+    """Publish frames and hand each click to `on_click` until Ctrl-C.
+
+    ValueError and RuntimeError from `on_click` are printed and shown on the
+    page. The callback decides whether a click that arrived during a move is kept.
+    """
+    try:
+        while True:
+            read_frame(cam, view, show)
+            click = view.consume()
+            if click is None:
+                continue
+            try:
+                on_click(click)
+            except (ValueError, RuntimeError) as exc:
+                view.report(str(exc))
+                print(exc)
+    except KeyboardInterrupt:
+        print("Stopped.")
+    finally:
+        view.close()

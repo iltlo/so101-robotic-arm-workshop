@@ -11,7 +11,7 @@ page; Rerun cannot forward clicks on its image.
 
 from so101_control import SO101
 from so101_utils.camera import open_camera
-from so101_utils.click_app import attach_camera, click_target, frame_viewer, read_frame
+from so101_utils.click_app import attach_camera, click_target, frame_viewer, run_click_loop
 from so101_utils.click_view import ClickView
 from so101_utils.config import arm_parser, load_hand_eye, load_robot
 from so101_utils.moves import APPROACH_M, DWELL_S, PICK_HEIGHT_M
@@ -46,27 +46,16 @@ if __name__ == "__main__":
         attach_camera(arm, cam, view, show)
         print("Going to rest, gripper open.")
         ready(arm, view)
-        try:
-            while True:
-                read_frame(cam, view, show)
-                click = view.consume()
-                if click is None:
-                    continue
-                try:
-                    target = click_target(click, cam.intrinsics, hand["base_T_camera"], PICK_HEIGHT_M)
-                except ValueError as exc:
-                    view.report(str(exc))
-                    print(exc)
-                    continue
-                print(f"pick {target}")
-                try:
-                    pick_and_return(arm, view, target)
-                except (ValueError, RuntimeError) as exc:
-                    view.report(str(exc))
-                    print(exc)
-                # Clicks made while the pick ran are dropped, not queued.
-                view.consume()
-        except KeyboardInterrupt:
-            print("Stopped.")
-        finally:
-            view.close()
+
+        def on_click(click):
+            target = click_target(click, cam.intrinsics, hand["base_T_camera"], PICK_HEIGHT_M)
+            print(f"pick {target}")
+            try:
+                pick_and_return(arm, view, target)
+            except (ValueError, RuntimeError) as exc:
+                view.report(str(exc))
+                print(exc)
+            # Clicks made while the pick ran are dropped, not queued.
+            view.consume()
+
+        run_click_loop(cam, view, show, on_click)

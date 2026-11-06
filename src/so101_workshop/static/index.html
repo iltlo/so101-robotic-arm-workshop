@@ -195,6 +195,8 @@
     padding: 10px 18px;
     box-shadow: 0 0 0 3px rgba(255, 95, 87, 0.12);
   }
+  /* Colour only: this action keeps the base button size. */
+  .btn.disconnect { background: var(--danger); border-color: var(--danger); color: var(--danger-ink); }
   .btn.ghost { background: transparent; }
   .btn.ghost.good { background: var(--accent); }
   .btn sup { margin-left: 5px; font-size: 9px; font-weight: 700; letter-spacing: 0.04em; opacity: 0.72; }
@@ -395,10 +397,10 @@
   .k-a { grid-column: 1; grid-row: 2; }
   .k-s { grid-column: 2; grid-row: 2; }
   .k-d { grid-column: 3; grid-row: 2; }
-  .k-z { grid-column: 1 / span 3; grid-row: 3; }
-  .k-f { grid-column: 4; grid-row: 3; }
-  .k-c { grid-column: 1 / span 3; grid-row: 4; }
-  .k-v { grid-column: 4; grid-row: 4; }
+  .k-f { grid-column: 4; grid-row: 2; }
+  .k-z { grid-column: 1; grid-row: 3; }
+  .k-c { grid-column: 3; grid-row: 3; }
+  .k-v { grid-column: 4; grid-row: 3; }
   details.more { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line-soft); }
   details.more > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   details.more[open] > summary { color: var(--ink); }
@@ -736,9 +738,9 @@
             <button class="key k-a" type="button" data-token="a" data-hold><kbd>A</kbd><span>+Y</span></button>
             <button class="key k-s" type="button" data-token="s" data-hold><kbd>S</kbd><span>−X</span></button>
             <button class="key k-d" type="button" data-token="d" data-hold><kbd>D</kbd><span>−Y</span></button>
+            <button class="key k-f" type="button" data-token="f" data-hold><kbd>F</kbd><span>Pitch +</span></button>
             <button class="key k-z" type="button" data-token="z" data-hold><kbd>Z</kbd><span>Roll +</span></button>
             <button class="key k-c" type="button" data-token="c" data-hold><kbd>C</kbd><span>Roll −</span></button>
-            <button class="key k-f" type="button" data-token="f" data-hold><kbd>F</kbd><span>Pitch +</span></button>
             <button class="key k-v" type="button" data-token="v" data-hold><kbd>V</kbd><span>Pitch −</span></button>
           </div>
           <div class="pads actions">
@@ -781,7 +783,7 @@
       <!-- ================= CLICK AND GO ================= -->
       <section class="panel" data-panel="go" hidden>
         <article class="card">
-          <div class="card-head"><h2>Click and go</h2><span class="hint">Moves 20 mm above the table point.</span></div>
+          <div class="card-head"><h2>Click and go</h2><span class="hint" id="go-clearance">Moves 20 mm above the table point.</span></div>
           <p class="hint">Click the table. A newer click cancels the move.</p>
         </article>
         <article class="card">
@@ -794,7 +796,7 @@
       <section class="panel" data-panel="pick" hidden>
         <article class="card">
           <div class="card-head"><h2>Click and pick</h2><span class="hint" id="pick-busy"></span></div>
-          <p class="hint">Click the image.</p>
+          <p class="hint" id="pick-summary">Click the image.</p>
           <div class="live-wrap"><div class="live-slot" id="slot-pick"></div><span class="live-label">Click to pick</span></div>
           <p class="hint" id="pick-result" style="margin-top:9px">No pick yet.</p>
         </article>
@@ -855,14 +857,15 @@
     pick: "Click and pick",
     detect: "Detect and pick",
   };
+  // Same flags the API checks. A page stays off until every listed flag is on.
   const PAGE_FEATURE = {
-    hardware: "connect",
-    handeye: "calibration",
-    intrinsics: "calibration",
-    teleop: "teleop",
-    go: "click_and_go",
-    pick: "yolo",
-    detect: "yolo",
+    hardware: ["connect"],
+    handeye: ["calibration"],
+    intrinsics: ["calibration"],
+    teleop: ["teleop"],
+    go: ["click_and_go"],
+    pick: ["click_and_go"],
+    detect: ["click_and_go", "yolo"],
   };
   const SLOT = {
     hardware: "slot-camera",
@@ -1034,19 +1037,42 @@
     button.addEventListener("click", () => show(button.dataset.page));
   });
 
+  function pageFeatures(page) {
+    const need = PAGE_FEATURE[page];
+    return Array.isArray(need) ? need : [];
+  }
+
   function applyFeatures(features) {
     state.features = features || {};
     const sig = JSON.stringify(features || {});
     if (sig !== state.featuresSig) {
       state.featuresSig = sig;
       document.querySelectorAll("[data-page]").forEach((button) => {
-        const feature = PAGE_FEATURE[button.dataset.page];
-        const enabled = !feature || !features || features[feature] !== false;
-        button.disabled = !enabled;
-        button.title = enabled ? "" : `${feature} is disabled in workshop.yaml`;
+        const missing = pageFeatures(button.dataset.page).filter(
+          (name) => features && features[name] === false,
+        );
+        button.disabled = missing.length > 0;
+        button.title = missing.length
+          ? `${missing.join(", ")} disabled in workshop.yaml`
+          : "";
       });
     }
     syncPortSteps();
+  }
+
+  function renderMotion(motion) {
+    if (!motion) return;
+    const hover = Number(motion.hover_m) * 1000;
+    const height = Number(motion.pick_height_m) * 1000;
+    const approach = Number(motion.approach_m) * 1000;
+    if (Number.isFinite(hover)) {
+      $("go-clearance").textContent = `Moves ${hover.toFixed(0)} mm above the table point.`;
+    }
+    if (Number.isFinite(height) && Number.isFinite(approach)) {
+      $("pick-summary").textContent =
+        `Click the table to pick ${height.toFixed(0)} mm above it. ` +
+        `The arm stops ${approach.toFixed(0)} mm higher, then moves down, closes, and releases at rest.`;
+    }
   }
 
   function syncPortSteps() {
@@ -1240,7 +1266,7 @@
     $("camera-live").textContent = bits.join(" · ");
     $("stat-camera").textContent = camera.connected ? "on" : camera.connecting ? "opening" : "off";
     $("camera-connect").classList.toggle("good", !camera.connected);
-    $("camera-disconnect").classList.toggle("danger", Boolean(camera.connected));
+    $("camera-disconnect").classList.toggle("disconnect", Boolean(camera.connected));
     if (!camera.connected) $("board").classList.remove("good");
     if (camera.connected && !state.cameraConnected) startStream();
     state.cameraConnected = Boolean(camera.connected);
@@ -1250,6 +1276,7 @@
   function renderStatus(status) {
     state.status = status;
     applyFeatures(status.features || {});
+    renderMotion(status.motion);
     const arm = status.arm || {};
     const camera = status.camera || {};
     const teleop = status.teleop || {};
@@ -1817,40 +1844,41 @@
         note(`Click ${x}, ${y}: ${data.status}`);
       }
     } else if (state.page === "pick") {
-      if (state.pickBusy) return;
-      state.pickBusy = true;
-      $("pick-busy").textContent = "Picking…";
-      $("pick-result").textContent = `Picking at pixel ${x}, ${y}…`;
-      try {
-        const data = await api("/api/click-pick", { x, y });
-        $("pick-result").textContent = `${data.status} at ${targetText(data.target)} (pixel ${x}, ${y}).`;
-        note(`Pick ${x}, ${y}: ${data.status}`);
-      } catch (error) {
-        $("pick-result").textContent = error.message || String(error);
-        note(error.message || String(error));
-      } finally {
-        state.pickBusy = false;
-        $("pick-busy").textContent = "";
-      }
+      const data = await runPick(
+        "pick-busy", "pick-result", `Picking at pixel ${x}, ${y}…`,
+        () => api("/api/click-pick", { x, y }),
+        (body) => `${body.status} at ${targetText(body.target)} (pixel ${x}, ${y}).`,
+      );
+      if (data) note(`Pick ${x}, ${y}: ${data.status}`);
     } else if (state.page === "detect") {
-      if (state.pickBusy) return;
-      state.pickBusy = true;
-      $("detect-busy").textContent = "Picking…";
-      $("detect-result").textContent = `Looking for a box under pixel ${x}, ${y}…`;
-      try {
-        const data = await api("/api/detect-pick", { x, y });
-        $("detect-result").textContent =
-          `${data.status} at ${targetText(data.target)} — box ${data.box + 1} ${data.label}, centre ${data.center[0]}, ${data.center[1]}.`;
-        note(`Detect pick ${data.label}: ${data.status}`);
-      } catch (error) {
-        $("detect-result").textContent = error.message || String(error);
-        note(error.message || String(error));
-      } finally {
-        state.pickBusy = false;
-        $("detect-busy").textContent = "";
-      }
+      const data = await runPick(
+        "detect-busy", "detect-result", `Looking for a box under pixel ${x}, ${y}…`,
+        () => api("/api/detect-pick", { x, y }),
+        (body) => `${body.status} at ${targetText(body.target)} — box ${body.box + 1} ${body.label}, centre ${body.center[0]}, ${body.center[1]}.`,
+      );
+      if (data) note(`Detect pick ${data.label}: ${data.status}`);
     }
   });
+
+  async function runPick(busyId, resultId, pending, task, format) {
+    if (state.pickBusy) return null;
+    state.pickBusy = true;
+    $(busyId).textContent = "Picking…";
+    $(resultId).textContent = pending;
+    try {
+      const data = await task();
+      $(resultId).textContent = format(data);
+      return data;
+    } catch (error) {
+      const text = error.message || String(error);
+      $(resultId).textContent = text;
+      note(text);
+      return null;
+    } finally {
+      state.pickBusy = false;
+      $(busyId).textContent = "";
+    }
+  }
 
   async function refreshDetections() {
     if (state.page !== "detect") return;
@@ -1899,7 +1927,8 @@
       const score = document.createElement("td");
       score.textContent = Number(box.score).toFixed(0);
       const centre = document.createElement("td");
-      centre.textContent = `${Math.round((box.x1 + box.x2) / 2)}, ${Math.round((box.y1 + box.y2) / 2)}`;
+      const [cx, cy] = frameCentre(box, resolution);
+      centre.textContent = `${cx}, ${cy}`;
       const action = document.createElement("td");
       const button = document.createElement("button");
       button.type = "button";
@@ -1917,6 +1946,19 @@
       });
       body.append(tr);
     });
+  }
+
+  function frameCentre(box, resolution) {
+    // Same truncation as box_centre() in so101_utils.click_app.
+    const camera = (state.status && state.status.camera) || {};
+    const frameW = live.naturalWidth || Number(camera.width) || 0;
+    const frameH = live.naturalHeight || Number(camera.height) || 0;
+    const resW = (resolution && resolution[0]) || frameW;
+    const resH = (resolution && resolution[1]) || frameH;
+    const cx = (Number(box.x1) + Number(box.x2)) / 2;
+    const cy = (Number(box.y1) + Number(box.y2)) / 2;
+    if (!frameW || !frameH || !resW || !resH) return [Math.trunc(cx), Math.trunc(cy)];
+    return [Math.trunc(cx * frameW / resW), Math.trunc(cy * frameH / resH)];
   }
 
   function drawDetectBoxes() {
@@ -1960,20 +2002,12 @@
   window.addEventListener("resize", drawDetectBoxes);
 
   async function pickBox(index) {
-    if (state.pickBusy) return;
-    state.pickBusy = true;
-    $("detect-busy").textContent = "Picking…";
-    try {
-      const data = await api("/api/pick", { index });
-      $("detect-result").textContent = `${data.status} at ${targetText(data.target)} from box ${index + 1}.`;
-      note(`Box ${index + 1}: ${data.status}`);
-    } catch (error) {
-      $("detect-result").textContent = error.message || String(error);
-      note(error.message || String(error));
-    } finally {
-      state.pickBusy = false;
-      $("detect-busy").textContent = "";
-    }
+    const data = await runPick(
+      "detect-busy", "detect-result", `Picking box ${index + 1}…`,
+      () => api("/api/pick", { index }),
+      (body) => `${body.status} at ${targetText(body.target)} from box ${index + 1}.`,
+    );
+    if (data) note(`Box ${index + 1}: ${data.status}`);
   }
 
   /* ---------------- Rerun ---------------- */

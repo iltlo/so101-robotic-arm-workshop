@@ -14,7 +14,7 @@ from so101_utils.click_app import (
     attach_camera,
     click_target,
     frame_viewer,
-    read_frame,
+    run_click_loop,
     select_box,
 )
 from so101_utils.click_view import ClickView
@@ -67,37 +67,26 @@ if __name__ == "__main__":
         attach_camera(arm, cam, view, show)
         print("Going to rest, gripper open.")
         ready(arm, view)
-        try:
-            while True:
-                read_frame(cam, view, show)
-                click = view.consume()
-                if click is None:
-                    continue
-                snapshot = detections.snapshot()
-                if not snapshot["boxes"]:
-                    view.report("No detection boxes yet")
-                    continue
-                try:
-                    index, box, centre = select_box(
-                        click, snapshot["boxes"], snapshot["resolution"], cam.intrinsics,
-                    )
-                except ValueError as exc:
-                    view.report(str(exc))
-                    print(exc)
-                    continue
-                print(f"pick box {index} ({box['label']}) centre {centre}")
-                try:
-                    target = click_target(
-                        centre, cam.intrinsics, hand["base_T_camera"], PICK_HEIGHT_M,
-                    )
-                    if pick_and_return(arm, view, target):
-                        view.report(f"Picked {box['label']} at the box centre {centre}")
-                except (ValueError, RuntimeError) as exc:
-                    view.report(str(exc))
-                    print(exc)
-                # Clicks made while the pick ran are dropped, not queued.
-                view.consume()
-        except KeyboardInterrupt:
-            print("Stopped.")
-        finally:
-            view.close()
+
+        def on_click(click):
+            snapshot = detections.snapshot()
+            if not snapshot["boxes"]:
+                view.report("No detection boxes yet")
+                return
+            index, box, centre = select_box(
+                click, snapshot["boxes"], snapshot["resolution"], cam.intrinsics,
+            )
+            print(f"pick box {index} ({box['label']}) centre {centre}")
+            try:
+                target = click_target(
+                    centre, cam.intrinsics, hand["base_T_camera"], PICK_HEIGHT_M,
+                )
+                if pick_and_return(arm, view, target):
+                    view.report(f"Picked {box['label']} at the box centre {centre}")
+            except (ValueError, RuntimeError) as exc:
+                view.report(str(exc))
+                print(exc)
+            # Clicks made while the pick ran are dropped, not queued.
+            view.consume()
+
+        run_click_loop(cam, view, show, on_click)

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from so101_utils.click_app import select_box
+from so101_utils.click_app import box_centre, select_box
 from so101_workshop.detections import parse_detections
 
 
@@ -61,9 +61,10 @@ def test_select_box_prefers_the_smallest_box_under_the_click():
 def test_select_box_scales_the_detection_resolution_to_the_frame():
     intrinsics = SimpleNamespace(width=1000, height=500)
     boxes = [_box(100, 50, 200, 150)]
-    index, _, centre = select_box((250, 180), boxes, [500, 250], intrinsics)
+    index, box, centre = select_box((250, 180), boxes, [500, 250], intrinsics)
     assert index == 0
     assert centre == (300, 200)
+    assert box_centre(box, [500, 250], intrinsics) == centre
 
 
 def test_select_box_needs_a_click_inside_a_box():
