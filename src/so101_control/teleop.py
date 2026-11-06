@@ -1,4 +1,5 @@
-"""Cartesian keyboard control. Steps are metres. Roll, pitch, and yaw are base-frame degrees.
+"""Cartesian keyboard control. Steps are metres. Roll and pitch step about the
+gripper's own axes; every goal is in the base frame.
 
 The browser and the pynput script both feed tokens into this class. pynput is
 imported only when a pynput key object arrives, so the workshop server does not
@@ -10,6 +11,8 @@ from threading import Lock
 import time
 
 from so101_control.arm import SO101
+from so101_control.kinematics import IKError
+from so101_utils.model import rotate_gripper
 
 _MOVES = {"w", "a", "s", "d", "q", "e", "z", "c", "f", "v"}
 # Same as the arm default.
@@ -38,6 +41,7 @@ class Teleop:
         self.running = True
         self._cancel = cancel
         self._command = None  # xyz metres; roll, pitch, yaw only while those keys are used
+        self._turn_point = None  # xyz a run of roll and pitch keys pivots about
         self._notice = None
         self._lock = Lock()
         self._held: set[str] = set()
@@ -97,6 +101,7 @@ class Teleop:
             self._held.clear()
             self._queue.clear()
             self._command = None
+            self._turn_point = None
 
     def on_press(self, key):
         # Listener thread: record the key and return. A motor call here blocks
@@ -168,6 +173,7 @@ class Teleop:
             return self._nudge(*self._delta([token]))
         if token == "h":
             self._command = None
+            self._turn_point = None
             try:
                 arrived = self.arm.home(wait=False, cancel=self._halted)
             except (ValueError, RuntimeError) as exc:
@@ -179,6 +185,7 @@ class Teleop:
             return True
         if token == "r":
             self._command = None
+            self._turn_point = None
             try:
                 arrived = self.arm.rest(wait=False, cancel=self._halted)
             except (ValueError, RuntimeError) as exc:
@@ -216,31 +223,53 @@ class Teleop:
     def _nudge(self, dx=0.0, dy=0.0, dz=0.0, dr=0.0, dp=0.0) -> bool:
         if self._command is None:
             measured = self.arm.pose_at(self.arm.get_joints())
-            base = (measured.x, measured.y, measured.z, None, None, None)
+            base = (measured.x, measured.y, measured.z,
+                    measured.roll, measured.pitch, measured.yaw)
         else:
             base = self._command
-        x, y, z = base[0] + dx, base[1] + dy, base[2] + dz
-        # A pure translation must not pin orientation. This arm has five joints,
-        # so holding roll, pitch, and yaw stops the tool point short of the goal.
-        roll = pitch = yaw = None
-        if dr != 0.0 or dp != 0.0:
-            if base[3] is None:
-                measured = self.arm.pose_at(self.arm.get_joints())
-                base = (x, y, z, measured.roll, measured.pitch, measured.yaw)
-            roll = base[3] + dr
-            pitch = base[4] + dp
-            yaw = base[5]
+        turning = dr != 0.0 or dp != 0.0
+        moving = dx != 0.0 or dy != 0.0 or dz != 0.0
+        # A run of roll and pitch keys pivots about the point the run started at.
+        # Re-basing on the solved pose each time would walk the tool point by the
+        # solver error, which is what made a pitch press lurch.
+        if turning and not moving and self._turn_point is not None:
+            x, y, z = self._turn_point
+        else:
+            x, y, z = base[0] + dx, base[1] + dy, base[2] + dz
         try:
             # No settle wait: a live joint often stops short of the 2° band.
-            kwargs = {"wait": False}
+            # A nudge is one goal, not a ramp the user waits through.
+            kwargs = {"wait": False, "single_goal": True}
             if self._cancel is not None:
                 kwargs["cancel"] = self._halted
-            self.arm.move_to(x, y, z, roll, pitch, yaw, **kwargs)
+            if turning:
+                result = self._turn((x, y, z), base[3:6], dr, dp, **kwargs)
+                if result is None:
+                    self._say("Turn blocked: the tool point would move")
+                    return True
+                (roll, pitch, yaw), arrived = result
+            else:
+                roll = pitch = yaw = None
+                arrived = self.arm.move_to(x, y, z, **kwargs)
         except (ValueError, RuntimeError) as exc:
             self._say(str(exc))
             time.sleep(ERROR_S)
             return True
-        self._command = (x, y, z, roll, pitch, yaw)
+        if not arrived:
+            self._command = None
+            self._turn_point = None
+            return True
+        solved = self.arm.target_pose()
+        if solved is None:
+            self._command = None
+            self._turn_point = None
+            return True
+        # Step from where the solver put the tool, not from the request. The
+        # five-joint arm leaves a little solve error, and walking the request
+        # ahead of it turns later nudges into branches and jumps.
+        self._command = (solved.x, solved.y, solved.z,
+                         solved.roll, solved.pitch, solved.yaw)
+        self._turn_point = (x, y, z) if turning else None
         self._notice = None
         if roll is None:
             print(f"Goal x={x:.4f} m, y={y:.4f} m, z={z:.4f} m")
@@ -248,6 +277,23 @@ class Teleop:
             print(f"Goal x={x:.4f} m, y={y:.4f} m, z={z:.4f} m, "
                   f"roll={roll:.1f} deg, pitch={pitch:.1f} deg, yaw={yaw:.1f} deg")
         return True
+
+    def _turn(self, point, base_angles, dr, dp, **kwargs):
+        """Turn about the gripper frame while holding the tool point.
+
+        A step can need more wrist travel than the pose allows; halving keeps a
+        blocked turn from snapping to a different arm branch. Returns the angles
+        that moved and whether the move finished, or None when even the smallest
+        step cannot hold the point.
+        """
+        for scale in (1.0, 0.5, 0.25):
+            angles = rotate_gripper(base_angles, roll=dr * scale, pitch=dp * scale)
+            try:
+                arrived = self.arm.move_to(*point, *angles, hold_point=True, **kwargs)
+                return angles, arrived
+            except IKError:
+                continue
+        return None
 
     def _say(self, message: str) -> None:
         if message != self._notice:

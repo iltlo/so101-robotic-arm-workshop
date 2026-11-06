@@ -41,7 +41,7 @@ Wheels checked on PyPI for Python 3.12:
 
 | Package | Windows x64 | macOS | Linux |
 | --- | --- | --- | --- |
-| opencv-python 4.13.0.92 | `win_amd64` | arm64 and x86_64 | manylinux x86_64 and aarch64 |
+| opencv-python-headless 4.13.0.92 | `win_amd64` | arm64 and x86_64 | manylinux x86_64 and aarch64 |
 | pupil-apriltags 1.0.4.post11 | `win_amd64` | arm64 | manylinux x86_64 |
 | feetech-servo-sdk 1.0.0 | pure-Python sdist | pure-Python sdist | pure-Python sdist |
 | pybullet 3.2.7 | no cp312 wheel | no cp312 wheel | manylinux wheels stop at cp311 |

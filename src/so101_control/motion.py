@@ -40,11 +40,14 @@ def move_joints(robot, targets: dict[str, float], limits: dict[str, tuple[float,
                 timeout_s: float = DEFAULT_TIMEOUT_S, tolerance_deg: float = DEFAULT_TOLERANCE_DEG,
                 wait=True, on_step=None, cancel=None,
                 start: dict[str, float] | None = None,
-                commanded: dict[str, float] | None = None) -> dict[str, float] | None:
+                commanded: dict[str, float] | None = None,
+                single_goal: bool = False) -> dict[str, float] | None:
     """Step toward the targets. Returns None when `cancel()` asks to stop.
 
     The path is split into steps of `speed_deg_s * period_s`. `start` is the
     last joint command. Without it, the split begins at the encoders.
+    `single_goal` sends a move of up to two steps in one write: a keyboard nudge
+    should not wait out a ramp it can barely see.
     """
     if not targets or not set(targets) <= set(JOINTS):
         raise ValueError("Unknown or empty joint target")
@@ -73,7 +76,10 @@ def move_joints(robot, targets: dict[str, float], limits: dict[str, tuple[float,
 
     begun = time.monotonic()
     distance = max(abs(value - origin[name]) for name, value in targets.items())
-    steps = max(1, math.ceil(distance / (speed_deg_s * period_s)))
+    budget = speed_deg_s * period_s
+    steps = max(1, math.ceil(distance / budget))
+    if single_goal and distance <= 2.0 * budget:
+        steps = 1
     for index in range(1, steps + 1):
         if stopped():
             return None

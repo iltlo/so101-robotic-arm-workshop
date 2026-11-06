@@ -11,7 +11,7 @@ def get_ports() -> set[str]:
     try:
         from serial.tools import list_ports
     except ImportError as exc:
-        raise RuntimeError("Install pyserial (the ports extra) to list USB devices") from exc
+        raise RuntimeError("Install pyserial to list USB devices") from exc
     return {port.device for port in list_ports.comports()}
 
 

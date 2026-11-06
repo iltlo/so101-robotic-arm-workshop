@@ -7,7 +7,8 @@ from scipy.spatial.transform import Rotation
 from so101_control import SO101
 from so101_control.arm import DEFAULT_EE_TOOL_OFFSET_M, OPEN_PERCENT
 from so101_control.backend import MockBackend, OffsetBackend
-from so101_utils.model import JOINTS
+from so101_control.kinematics import TURN_TOLERANCE_M
+from so101_utils.model import JOINTS, rotate_gripper
 
 
 def test_context_manager_and_speed_clamp():
@@ -92,6 +93,22 @@ def test_torque_off_forgets_the_last_command():
         arm._backend.send_action = spy
         arm.move_joint("shoulder_pan", 1.0)
         assert packets[0]["shoulder_pan.pos"] == pytest.approx(21.0)
+
+
+def test_hold_point_turns_keep_the_tcp():
+    """A pitch key must not walk the reported xyz while the gripper turns."""
+    with SO101.connect(mock=True) as arm:
+        anchor = arm.get_pose()
+        for _ in range(4):
+            pose = arm.get_pose()
+            angles = rotate_gripper((pose.roll, pose.pitch, pose.yaw), pitch=5.0)
+            arm.move_to(anchor.x, anchor.y, anchor.z, *angles,
+                        hold_point=True, wait=False)
+            moved = arm.get_pose()
+            assert np.linalg.norm(
+                [moved.x - anchor.x, moved.y - anchor.y, moved.z - anchor.z]
+            ) <= TURN_TOLERANCE_M
+            assert moved.pitch - pose.pitch == pytest.approx(5.0, abs=0.5)
 
 
 def test_move_to_changes_pitch_in_the_base_frame():

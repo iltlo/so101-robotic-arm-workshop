@@ -155,13 +155,15 @@ def test_teleop_tokens_jog_and_gripper(client):
     assert tap("w").x > start.x + 0.002
     after_w = agent.arm.get_pose().x
     assert tap("s").x < after_w - 0.002
-    # This arm has five joints, so a sideways step can undershoot the 5 mm goal.
+    # The pan carries a sideways step, so yaw follows and roll and pitch hold.
     y_before = agent.arm.get_pose().y
-    assert tap("left").y > y_before
-    assert agent.teleop._command[1] == pytest.approx(y_before + 0.005, abs=1e-4)
+    y_after = tap("left").y
+    assert y_after > y_before + 0.0035
+    assert tap("left").y > y_after + 0.0035
     z_before = agent.arm.get_pose().z
-    assert tap("e").z > z_before
-    assert agent.teleop._command[2] == pytest.approx(z_before + 0.005, abs=1e-4)
+    z_after = tap("e").z
+    assert z_after > z_before + 0.003
+    assert tap("e").z > z_after + 0.003
     roll_before = agent.arm.get_pose().roll
     assert abs(tap("z").roll - roll_before) > 1.0
     pitch_before = agent.arm.get_pose().pitch
@@ -189,6 +191,23 @@ def test_teleop_tokens_jog_and_gripper(client):
     assert too_far.status_code == 400
     unknown = client.post("/api/teleop", json={"action": "fly", "token": "w"})
     assert unknown.status_code == 400
+
+
+def test_teleop_pitch_turns_about_the_gripper(client):
+    agent = _connect(client)
+    for _ in range(4):
+        assert client.post("/api/teleop", json={"action": "tap", "token": "a"}).status_code == 200
+
+    def frame():
+        return agent.arm._kin.fk(agent.arm.get_joints())[:3, :3]
+
+    before = frame()
+    assert client.post("/api/teleop", json={"action": "tap", "token": "f"}).status_code == 200
+    after = frame()
+    # A turn about the gripper's own Y leaves that axis fixed. Base-frame pitch
+    # after a pan would swing it sideways instead.
+    assert after @ [0.0, 1.0, 0.0] == pytest.approx(before @ [0.0, 1.0, 0.0], abs=0.01)
+    assert abs(float(after[2, 0] - before[2, 0])) > 0.05
 
     tuned = client.post("/api/teleop/config", json={"step_m": 0.02, "speed_deg_s": 45})
     assert tuned.status_code == 200, tuned.text

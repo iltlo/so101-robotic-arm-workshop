@@ -9,9 +9,13 @@ import pytest
 from scipy.spatial.transform import Rotation
 
 from so101_control.arm import SO101
-from so101_control.kinematics import NEAR_STEP_DEG, Kinematics
+from so101_control.kinematics import (
+    NEAR_STEP_DEG, TURN_TOLERANCE_M, IKError, Kinematics,
+)
 from so101_utils.config import load_robot, validated_limits
-from so101_utils.model import JOINTS, gripper_rotation_from_rpy, tool_rpy
+from so101_utils.model import (
+    JOINTS, gripper_rotation_from_rpy, rotate_gripper, tool_rpy,
+)
 
 # Recorded from PlaCo before that extra was removed. The live gap was about
 # 1e-8 m and 1e-5 deg; these bounds are that rounding, not a frame change.
@@ -142,6 +146,69 @@ def test_repeated_x_steps_do_not_rotate_the_wrist(kin):
             assert state["wrist_roll"] == pytest.approx(0.0, abs=0.5)
     finally:
         kin.ee_tool_offset = previous
+
+
+def test_repeated_y_steps_move_sideways_and_keep_the_tilt(kin):
+    """A five-joint arm cannot hold yaw while the pan carries the tool sideways."""
+    limits = validated_limits(load_robot())
+    state = {name: 0.0 for name in JOINTS}
+    previous = kin.ee_tool_offset
+    kin.ee_tool_offset = 0.020
+    try:
+        start = tool_rpy(kin.fk(state)[:3, :3])
+        for _ in range(5):
+            before = kin.tool_point(kin.fk(state))
+            target = before + np.array([0.0, 0.005, 0.0])
+            state = kin.position_ik(state, target, limits)
+            after = kin.tool_point(kin.fk(state))
+            assert after[1] - before[1] > 0.0035
+            roll, pitch, _ = tool_rpy(kin.fk(state)[:3, :3])
+            assert (roll, pitch) == pytest.approx((start[0], start[1]), abs=0.5)
+    finally:
+        kin.ee_tool_offset = previous
+
+
+def test_a_turn_holds_the_tool_point(kin):
+    """F and V turn the gripper while the reported xyz stays put."""
+    limits = validated_limits(load_robot())
+    state = {name: 0.0 for name in JOINTS}
+    anchor = kin.tool_point(kin.fk(state))
+    for _ in range(4):
+        rpy = rotate_gripper(tool_rpy(kin.fk(state)[:3, :3]), pitch=5.0)
+        goal = gripper_rotation_from_rpy(rpy)
+        state = kin.position_ik(state, anchor, limits, rpy=rpy,
+                                follow_yaw=True, local_only=True)
+        pose = kin.fk(state)
+        assert np.linalg.norm(kin.tool_point(pose) - anchor) <= TURN_TOLERANCE_M
+        # World-Z rotation is the direction this arm cannot hold; roll and pitch
+        # are the ones a pitch key asks for.
+        error = Rotation.from_matrix(goal @ pose[:3, :3].T).as_rotvec()
+        assert np.rad2deg(np.linalg.norm(error[:2])) < 0.5
+    assert tool_rpy(kin.fk(state)[:3, :3])[1] == pytest.approx(20.0, abs=1.0)
+
+
+def test_a_turn_raises_instead_of_jumping_when_it_cannot_hold(kin):
+    limits = validated_limits(load_robot())
+    state = {name: 0.0 for name in JOINTS}
+    anchor = kin.tool_point(kin.fk(state))
+    rpy = rotate_gripper(tool_rpy(kin.fk(state)[:3, :3]), pitch=60.0)
+    with pytest.raises(IKError):
+        kin.position_ik(state, anchor, limits, rpy=rpy,
+                        follow_yaw=True, local_only=True)
+
+
+def test_a_turn_survives_a_mid_workspace_pose(kin):
+    """Away from full extension the arm can pitch further while holding the point."""
+    limits = validated_limits(load_robot())
+    state = kin.position_ik({name: 0.0 for name in JOINTS}, (0.25, 0.0, 0.20),
+                            limits)
+    anchor = kin.tool_point(kin.fk(state))
+    for _ in range(8):
+        rpy = rotate_gripper(tool_rpy(kin.fk(state)[:3, :3]), pitch=5.0)
+        state = kin.position_ik(state, anchor, limits, rpy=rpy,
+                                follow_yaw=True, local_only=True)
+        assert np.linalg.norm(kin.tool_point(kin.fk(state)) - anchor) <= TURN_TOLERANCE_M
+    assert tool_rpy(kin.fk(state)[:3, :3])[1] == pytest.approx(40.0, abs=1.5)
 
 
 def test_downward_steps_keep_the_twist(kin):

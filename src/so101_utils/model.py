@@ -50,3 +50,20 @@ def tool_rpy(gripper_rotation) -> np.ndarray:
 def gripper_rotation_from_rpy(rpy) -> np.ndarray:
     """gripper_frame_link rotation for base-frame XYZ Euler degrees."""
     return Rotation.from_euler("xyz", np.asarray(rpy, dtype=float), degrees=True).as_matrix()
+
+
+def rotate_gripper(rpy, *, roll: float = 0.0, pitch: float = 0.0) -> np.ndarray:
+    """Base-frame angles after a turn about the gripper's own X or Y axis.
+
+    Roll turns about the fingers, pitch lifts them. Because the turn is applied
+    in the gripper frame, panning first changes where pitch points. The result
+    stays in plain XYZ Euler, so the vertical chart does not drop a small lean.
+    """
+    rotation = gripper_rotation_from_rpy(rpy)
+    if roll:
+        rotation = rotation @ Rotation.from_euler("x", roll, degrees=True).as_matrix()
+    if pitch:
+        rotation = rotation @ Rotation.from_euler("y", pitch, degrees=True).as_matrix()
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Gimbal lock detected")
+        return Rotation.from_matrix(rotation).as_euler("xyz", degrees=True)
