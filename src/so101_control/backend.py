@@ -77,30 +77,30 @@ def connect_follower(follower) -> None:
         follower.configure()
 
 
-def connect_live(config: dict):
+def connect_live(config: dict, *, require_calibration: bool = True):
+    """Open the follower on `port` with the thin STS3215 bus."""
     port = config.get("port")
     if not port:
         raise ValueError("Set port in config/robot.yaml")
-    arm_id = config.get("arm_id", "workshop_follower")
-    from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
+    from pathlib import Path
 
-    # No relative cap here. Joint steps are limited in move_joints. The gripper
-    # is 0–100, so a cap of 10 (meant for degrees) clips a normal open/close.
-    follower = SO101Follower(SO101FollowerConfig(
-        port=port, id=arm_id, use_degrees=True, max_relative_target=None,
-    ))
+    from so101_utils.config import CONFIG
+
+    from .feetech import FeetechFollower
+
+    calibration_path = CONFIG / "motors.json"
+    follower = FeetechFollower(port, calibration_path=Path(calibration_path))
     try:
-        connect_follower(follower)
-        if not follower.is_calibrated:
+        follower.connect()
+        if require_calibration and not follower.is_calibrated:
             raise RuntimeError(
-                f"No motor calibration for arm_id={arm_id!r}. Run lerobot-calibrate first "
-                f"(see the README) for port {port}."
+                f"No motor calibration for {port}. config/motors.json needs a homing offset "
+                "and a range for every joint."
             )
     except BaseException:
-        if follower.bus.is_connected:
-            try:
-                follower.bus.disconnect(False)
-            except Exception:
-                pass
+        try:
+            follower.disconnect(False)
+        except Exception:
+            pass
         raise
     return follower

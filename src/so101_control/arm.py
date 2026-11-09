@@ -7,7 +7,7 @@ from so101_utils.config import joint_offsets, load_robot, validated_limits
 from so101_utils.model import JOINTS, tool_rpy
 
 from .backend import MockBackend, OffsetBackend, connect_live, release_overload
-from .kinematics import Kinematics
+from .kinematics import DEFAULT_TOLERANCE_M, Kinematics, TURN_TOLERANCE_M
 from .motion import MotionError, joint_state, move_joints
 
 MAX_SPEED_DEG_S = 90.0
@@ -70,6 +70,7 @@ class SO101:
         self.mock = mock
         self._goal = None
         self._sent = None
+        self._target_pose = None
         self._on_motion = None
         self._on_target = None
         self.torque_on = True
@@ -83,14 +84,18 @@ class SO101:
 
     @classmethod
     def connect(cls, mock: bool = False, config_path: str | None = None, *,
-                ee_tool_offset: float = DEFAULT_EE_TOOL_OFFSET_M) -> "SO101":
+                ee_tool_offset: float = DEFAULT_EE_TOOL_OFFSET_M,
+                require_calibration: bool = True) -> "SO101":
         config = load_robot(config_path)
         limits = validated_limits(config)
         kinematics = Kinematics(config["urdf"], ee_tool_offset=ee_tool_offset)
         if mock:
             backend = MockBackend()
         else:
-            backend = OffsetBackend(connect_live(config), joint_offsets(config))
+            backend = OffsetBackend(
+                connect_live(config, require_calibration=require_calibration),
+                joint_offsets(config),
+            )
         return cls(backend, kinematics, limits, mock=mock, ee_tool_offset=ee_tool_offset)
 
     def __enter__(self) -> "SO101":
@@ -151,6 +156,11 @@ class SO101:
             raise ValueError(f"Speed must be from {MIN_SPEED_DEG_S:.0f} to {MAX_SPEED_DEG_S:.0f} deg/s")
         self._speed = speed
 
+    @property
+    def speed(self) -> float:
+        """Joint speed used by later moves, in degrees per second."""
+        return self._speed
+
     def get_joints(self) -> dict[str, float]:
         """Arm joints in degrees. Gripper is percent: 0 closed, 100 fully open."""
         return joint_state(self._backend)
@@ -174,26 +184,43 @@ class SO101:
 
     def pose_at(self, joints: dict[str, float]) -> Pose:
         """Tool pose for a joint sample already read from the arm."""
-        matrix = self._kin.fk(joints)
+        return self._pose_of(self._kin.fk(joints))
+
+    def _pose_of(self, matrix) -> Pose:
         roll, pitch, yaw = tool_rpy(matrix[:3, :3])
         x, y, z = self._kin.tool_point(matrix)
         return Pose(x, y, z, roll, pitch, yaw)
 
+    def target_pose(self) -> Pose | None:
+        """Tool pose of the last IK solution, before the move settled.
+
+        Teleop steps from this point: using the request instead lets the solve
+        error accumulate until the next step is a jump. None before a move.
+        """
+        return self._target_pose
+
     def move_to(self, x: float, y: float, z: float,
                 roll: float | None = None, pitch: float | None = None, yaw: float | None = None, *,
-                wait: bool = True, cancel=None, downward: bool = False) -> bool:
+                wait: bool = True, cancel=None, downward: bool = False,
+                single_goal: bool = False, hold_point: bool = False) -> bool:
         """Move the tool to a pose in the base frame.
 
         x, y, z are metres of the tool point: `ee_tool_offset` along
         gripper_frame_link +Z. roll, pitch, yaw are base-frame degrees; pass all
-        three or none. Pitch +90 points the fingers straight down. None keeps the
-        current orientation, unless `downward` points the fingers straight down.
-        Returns False when `cancel` stops the move.
+        three or none. Pitch +90 points the fingers straight down with a fixed
+        twist. None keeps the current orientation, unless `downward` holds the
+        finger axis inside the down cone and leaves the twist free, which is what
+        reaches the edge of the table. `hold_point` keeps the tool point within a
+        couple of millimetres, lets yaw follow the pan, and refuses a branch
+        jump; a turn that cannot stay there raises instead of moving the arm
+        somewhere else. Returns False when `cancel` stops the move.
         """
         point = (float(x), float(y), float(z))
         given = (roll, pitch, yaw)
         if any(value is not None for value in given) and any(value is None for value in given):
             raise ValueError("roll, pitch, and yaw are one pose")
+        if hold_point and roll is None:
+            raise ValueError("hold_point needs roll, pitch, and yaw")
         rpy = None if roll is None else (float(roll), float(pitch), float(yaw))
         # Seed IK from the last command so a small step does not pick a new elbow
         # while the encoders are still catching up. Skip the read when it covers
@@ -203,10 +230,14 @@ class SO101:
         else:
             state = self.get_joints()
         targets = self._kin.position_ik(
-            state, point, self._limits, downward=downward, rpy=rpy)
+            state, point, self._limits, downward=downward, rpy=rpy,
+            follow_yaw=hold_point, local_only=hold_point,
+            tolerance_m=TURN_TOLERANCE_M if hold_point else DEFAULT_TOLERANCE_M)
+        matrix = self._kin.fk(targets)
+        self._target_pose = self._pose_of(matrix)
         if self._on_target is not None:
-            self._on_target(self._kin.fk(targets))
-        return self._move(targets, wait=wait, cancel=cancel)
+            self._on_target(matrix)
+        return self._move(targets, wait=wait, cancel=cancel, single_goal=single_goal)
 
     def move_joint(self, name: str, delta_deg: float) -> None:
         """Step one arm joint. The step must be non-zero and at most 2 degrees."""
@@ -248,39 +279,60 @@ class SO101:
         if self._goal:
             self._move(self._goal, wait=True)
 
+    def clear_commands(self) -> None:
+        """Forget the last goal and command cache so the next move starts at the encoders."""
+        self._goal = None
+        self._sent = None
+
     def relax(self) -> None:
         """Torque off. Support the arm; it can fall. Not an emergency stop."""
-        if not self.mock:
-            self._backend.bus.disable_torque()
-        self.torque_on = False
+        try:
+            if not self.mock:
+                self._backend.bus.disable_torque()
+        finally:
+            self.clear_commands()
+            self.torque_on = False
         print("Torque OFF. Support the arm; it can fall.")
 
     def hold(self) -> None:
         """Torque on, holding the position the arm is in right now."""
-        if not self.mock:
-            bus = self._backend.bus
-            bus.sync_write("Goal_Position", bus.sync_read("Present_Position"))
-            bus.enable_torque()
-        self.torque_on = True
+        try:
+            if not self.mock:
+                bus = self._backend.bus
+                bus.sync_write("Goal_Position", bus.sync_read("Present_Position"))
+                bus.enable_torque()
+        finally:
+            self.clear_commands()
+            self.torque_on = True
         print("Torque ON at the measured position.")
 
-    def _move(self, targets: dict[str, float], *, wait: bool = True, cancel=None) -> bool:
+    def _move(self, targets: dict[str, float], *, wait: bool = True, cancel=None,
+              single_goal: bool = False) -> bool:
         self._goal = targets
         start = None
         if self._sent and set(targets) <= set(self._sent):
             start = {name: float(self._sent[name]) for name in targets}
         sent: dict[str, float] = {}
-        done = move_joints(
-            self._backend, targets, self._limits,
-            speed_deg_s=self._speed, period_s=MOCK_PERIOD_S if self.mock else LIVE_PERIOD_S,
-            timeout_s=MOVE_TIMEOUT_S, wait=wait, on_step=self._on_motion, cancel=cancel,
-            start=start, commanded=sent,
-        )
+        try:
+            done = move_joints(
+                self._backend, targets, self._limits,
+                speed_deg_s=self._speed, period_s=MOCK_PERIOD_S if self.mock else LIVE_PERIOD_S,
+                timeout_s=MOVE_TIMEOUT_S, wait=wait, on_step=self._on_motion, cancel=cancel,
+                start=start, commanded=sent, single_goal=single_goal,
+            )
+        except Exception:
+            self.clear_commands()
+            raise
+        if done is None:
+            # A cancelled move leaves the arm somewhere between the start and
+            # the goal. Never resume from that stale command.
+            self.clear_commands()
+            return False
         if sent:
             if self._sent is None:
                 self._sent = {}
             self._sent.update(sent)
-        return done is not None
+        return True
 
     def _gripper(self, percent: float) -> None:
         """Command the gripper (0 closed, 100 fully open).

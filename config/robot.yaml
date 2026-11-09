@@ -1,5 +1,5 @@
 # Follower USB port, calibrated joint limits (degrees), and small zero corrections.
-# 0° is the midpoint from lerobot-calibrate. Offsets are added to feedback and
+# 0° is the midpoint from motor calibration. Offsets are added to feedback and
 # subtracted from goals so the kinematics match this arm.
 port: /dev/ttyACM0
 arm_id: workshop_follower

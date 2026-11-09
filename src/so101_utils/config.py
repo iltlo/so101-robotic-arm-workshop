@@ -16,6 +16,17 @@ ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / "config"
 
 
+def set_station(root: str | Path) -> None:
+    """Point yaml reads and writes at one station directory.
+
+    The command-line scripts leave this at the repository root. The workshop
+    server calls it before opening the arm or the camera.
+    """
+    global ROOT, CONFIG
+    ROOT = Path(root).resolve()
+    CONFIG = ROOT / "config"
+
+
 def _load(path: Path) -> dict:
     if not path.is_file():
         raise FileNotFoundError(f"Missing {path}")
@@ -106,9 +117,13 @@ def load_camera(path: str | Path | None = None) -> dict:
     return data
 
 
-def save_camera_intrinsics(intr: Intrinsics, *, serial=None) -> None:
-    """Refresh resolution and intrinsics from the live camera."""
-    path = CONFIG / "camera.yaml"
+def save_camera_intrinsics(intr: Intrinsics, *, serial=None, path: str | Path | None = None) -> None:
+    """Refresh resolution and intrinsics from the live camera.
+
+    `path` writes the active camera profile. It defaults to camera.yaml, which is
+    what the command-line scripts use.
+    """
+    path = Path(path) if path else CONFIG / "camera.yaml"
     current = _load(path)
     current["serial"] = serial if serial is not None else current.get("serial")
     current["width"] = int(intr.width)
@@ -119,8 +134,24 @@ def save_camera_intrinsics(intr: Intrinsics, *, serial=None) -> None:
         "distortion": [float(v) for v in intr.distortion],
         "distortion_model": intr.distortion_model,
     }
-    path.write_text("# RGB camera. Intrinsics are updated by calibration/hand_eye.py.\n"
+    path.write_text("# RGB camera. Chessboard intrinsics are written by calibration/intrinsics.py.\n"
                     + yaml.safe_dump(current, sort_keys=False))
+
+
+def update_workshop(**values) -> dict:
+    """Merge top-level keys into workshop.yaml and return the result.
+
+    Used for the active camera profile. The file is small and edited by hand,
+    so it is rewritten with a short header rather than patched line by line.
+    """
+    path = CONFIG / "workshop.yaml"
+    data = _load(path) if path.is_file() else {}
+    data.update(values)
+    path.write_text(
+        "# Workshop flags. The command-line scripts ignore this file.\n"
+        + yaml.safe_dump(data, sort_keys=False)
+    )
+    return data
 
 
 def load_hand_eye() -> dict:

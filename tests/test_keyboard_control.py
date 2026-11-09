@@ -26,6 +26,7 @@ class _Arm:
 
     def __init__(self):
         self.pose = _Pose(0.2, 0.0, 0.2)
+        self.target = self.pose
         self.calls = []
         self.homes = []
         self.rests = []
@@ -39,8 +40,16 @@ class _Arm:
     def get_joints(self):
         return {"wrist_roll": 0.0, "wrist_flex": 0.0}
 
-    def move_to(self, x, y, z, roll=None, pitch=None, yaw=None, wait=True):
+    def move_to(self, x, y, z, roll=None, pitch=None, yaw=None, wait=True,
+                single_goal=False, hold_point=False, cancel=None):
         self.calls.append((x, y, z, roll, pitch, yaw, wait))
+        self.single_goal = single_goal
+        self.hold_point = hold_point
+        self.target = _Pose(x, y, z, *(value or 0.0 for value in (roll, pitch, yaw)))
+        return True
+
+    def target_pose(self):
+        return self.target
 
     def home(self, *, wait=True, cancel=None):
         self.homes.append((wait, bool(cancel and cancel())))
@@ -110,6 +119,7 @@ def test_f_and_v_step_wrist_pitch():
     assert arm.calls[0][3] == pytest.approx(0.0)
     assert arm.calls[0][5] == pytest.approx(0.0)
     assert arm.calls[0][0] == pytest.approx(0.2)
+    assert arm.hold_point is True
 
 
 def test_home_does_not_wait_for_settle():

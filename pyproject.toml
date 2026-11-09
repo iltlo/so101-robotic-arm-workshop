@@ -3,21 +3,39 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "so101-control"
+name = "so101-workshop"
 version = "0.1.0"
-description = "SO-101 workshop: a small arm API, RGB hand-eye, and click-and-go"
+description = "SO-101 workshop: local arm control and a browser UI"
+authors = [{ name = "iltlo", email = "pypi@ianlo.net" }]
 requires-python = ">=3.12,<3.14"
-dependencies = ["numpy>=2,<2.3", "scipy>=1.14", "PyYAML>=6", "opencv-python>=4.11,<4.14"]
+dependencies = [
+    "numpy>=2,<2.3",
+    "scipy>=1.14",
+    "PyYAML>=6",
+    "opencv-python-headless>=4.11,<4.14",
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+    "pyserial>=3.5,<4",
+    "feetech-servo-sdk>=1.0.0",
+    "paho-mqtt>=2.1",
+    "pupil-apriltags>=1.0.4",
+    "websockets>=13",
+    "rerun-sdk>=0.33,<0.34",
+]
+
+[project.scripts]
+so101-workshop = "so101_workshop.cli:main"
 
 [project.optional-dependencies]
-ports = ["pyserial>=3.5,<4"]
-hardware = ["lerobot[feetech,placo-dep]==0.6.1"]
-vision = ["pyrealsense2", "pupil-apriltags"]
-twin = ["rerun-sdk>=0.33,<0.34", "pynput>=1.7.8,<1.9"]
-test = ["pytest>=8"]
+vision = ["pyrealsense2"]
+twin = ["pynput>=1.7.8,<1.9"]
+test = ["pytest>=8", "httpx>=0.27"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+so101_workshop = ["static/*", "templates/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -30,6 +30,8 @@ def keyboard(keys=("t", "enter", "c", "q")):
     def identify(key):
         if key == kb.Key.enter:
             return "enter"
+        if key == kb.Key.space:
+            return "space"
         char = getattr(key, "char", None)
         return char.lower() if char else None
 

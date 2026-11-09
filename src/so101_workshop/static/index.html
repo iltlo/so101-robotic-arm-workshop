@@ -1,0 +1,2139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SO-101 workshop</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b0d11;
+    --panel: #141821;
+    --panel-2: #1a1f2a;
+    --line: #262c38;
+    --line-soft: #1e2430;
+    --ink: #e9edf3;
+    --muted: #909bab;
+    --accent: #b8f36b;
+    --accent-ink: #182208;
+    --danger: #ff5f57;
+    --danger-ink: #2b0806;
+    --warn: #f6b93b;
+    --info: #6fb5ff;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    display: grid;
+    grid-template-columns: 232px minmax(0, 1fr);
+    overflow: hidden;
+  }
+  button, input, select { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  button:disabled { cursor: not-allowed; opacity: 0.45; }
+  h1, h2, h3 { margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+  h1 { font-size: 25px; }
+  h2 { font-size: 16px; }
+  h3 { font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
+  p { margin: 0; }
+  kbd {
+    font: inherit;
+    font-weight: 700;
+    font-size: 12px;
+    padding: 1px 6px;
+    border: 1px solid var(--line);
+    border-bottom-width: 2px;
+    border-radius: 5px;
+    background: var(--panel-2);
+    color: var(--ink);
+  }
+
+  aside.nav {
+    background: #0e1117;
+    border-right: 1px solid var(--line);
+    padding: 18px 12px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow: auto;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 2px 8px 20px;
+    font-size: 21px;
+    font-weight: 750;
+    letter-spacing: -0.03em;
+  }
+  .brand .mark {
+    width: 26px;
+    height: 26px;
+    border-radius: 8px;
+    background: var(--accent);
+    color: var(--accent-ink);
+    display: grid;
+    place-items: center;
+    font-size: 14px;
+    font-weight: 900;
+  }
+  .brand small {
+    display: block;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .group {
+    margin: 16px 10px 4px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #677183;
+  }
+  nav button {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 9px 11px;
+    border: 0;
+    border-radius: 9px;
+    background: transparent;
+    color: #c3cbd7;
+    text-align: left;
+    font-weight: 550;
+  }
+  nav button:hover:not(.active) { background: #151922; color: var(--ink); }
+  nav button.active { background: var(--panel-2); color: var(--ink); box-shadow: inset 2px 0 0 var(--accent); }
+  nav button:disabled { background: transparent; }
+  .nav-note {
+    margin-top: auto;
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .nav-note b { color: var(--ink); }
+
+  .workspace {
+    min-width: 0;
+    min-height: 0;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    padding: 14px 20px;
+    background: rgba(11, 13, 17, 0.92);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--line);
+  }
+  .topbar .left { min-width: 0; }
+  .pills { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 9px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--panel);
+    font-size: 11px;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .pill b { color: var(--ink); font-weight: 650; }
+  .pill.good { border-color: #33502a; }
+  .pill.good b { color: var(--accent); }
+  .pill.bad { border-color: #5c2a28; }
+  .pill.bad b { color: var(--danger); }
+  .safety { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+  .link {
+    font-size: 11px;
+    color: var(--muted);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin-right: 4px;
+  }
+  .btn {
+    border: 1px solid var(--line);
+    background: var(--panel-2);
+    color: var(--ink);
+    border-radius: 9px;
+    padding: 9px 14px;
+    font-weight: 620;
+  }
+  .btn:hover:not(:disabled) { border-color: #3b4454; }
+  .btn.good { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .btn.danger {
+    background: var(--danger);
+    border-color: var(--danger);
+    color: var(--danger-ink);
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 10px 18px;
+    box-shadow: 0 0 0 3px rgba(255, 95, 87, 0.12);
+  }
+  /* Colour only: this action keeps the base button size. */
+  .btn.disconnect { background: var(--danger); border-color: var(--danger); color: var(--danger-ink); }
+  .btn.ghost { background: transparent; }
+  .btn.ghost.good { background: var(--accent); }
+  .btn sup { margin-left: 5px; font-size: 9px; font-weight: 700; letter-spacing: 0.04em; opacity: 0.72; }
+  .btn.small { padding: 5px 10px; font-size: 12px; border-radius: 7px; }
+  .btn.wide { width: 100%; margin-top: 8px; }
+  .btn.quiet { background: transparent; color: var(--muted); }
+  .btn.quiet:hover:not(:disabled) { color: var(--ink); }
+
+  .message {
+    margin: 0 20px;
+    padding: 9px 12px;
+    border: 1px solid var(--line-soft);
+    border-left: 3px solid var(--accent);
+    border-radius: 8px;
+    background: #10141b;
+    color: #c8d0db;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    min-height: 34px;
+    white-space: pre-wrap;
+  }
+  .layout {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+    align-items: stretch;
+    padding: 14px 20px 20px;
+    min-height: 0;
+    flex: 1;
+    overflow: hidden;
+  }
+  .task {
+    min-width: 0;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding-right: 2px;
+    padding-bottom: 8px;
+  }
+  .panel { display: flex; flex-direction: column; gap: 14px; }
+  .panel[hidden] { display: none; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 16px 17px;
+  }
+  .card > h2 + .hint { margin-top: 5px; }
+  .card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .hint { color: var(--muted); font-size: 12.5px; }
+  .hint.good { color: var(--accent); }
+  .hint.warn { color: var(--warn); }
+  .hint.bad { color: var(--danger); }
+  .warn-box {
+    background: #221b0d;
+    border: 1px solid #4b3a15;
+    color: #f0cf8a;
+    border-radius: 9px;
+    padding: 10px 12px;
+    font-size: 12.5px;
+  }
+  .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+  .row.tight { margin-top: 6px; }
+  label.field { display: block; margin: 10px 0 4px; font-size: 12px; font-weight: 600; color: var(--muted); }
+  input, select {
+    width: 100%;
+    padding: 9px 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #0f131a;
+    color: var(--ink);
+    outline: none;
+  }
+  input:focus, select:focus { border-color: #4a5a3a; box-shadow: 0 0 0 3px rgba(184, 243, 107, 0.08); }
+  .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; }
+  .grid-4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0 10px; }
+  .stat-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+  .stat {
+    border: 1px solid var(--line-soft);
+    border-radius: 10px;
+    padding: 10px 12px;
+    background: var(--panel-2);
+  }
+  .stat span { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.07em; }
+  .stat b { font-size: 14px; font-weight: 650; }
+
+  .steps { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; color: var(--muted); }
+  .steps strong { color: var(--ink); }
+  ol.guide { margin: 12px 0 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+  .guide-step {
+    display: grid;
+    grid-template-columns: 24px minmax(0, 1fr);
+    gap: 10px;
+    border: 1px solid var(--line-soft);
+    border-radius: 10px;
+    background: var(--panel-2);
+    padding: 11px 12px;
+  }
+  .guide-step.active { border-color: #46552f; }
+  .guide-step.done { background: #141a14; }
+  .guide-num {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--line);
+    background: #0f131a;
+    font-size: 12px;
+    font-weight: 700;
+  }
+  .guide-step.active .guide-num { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .guide-step.done .guide-num { border-color: #46552f; color: var(--accent); }
+  .guide-body strong { display: block; font-size: 13px; font-weight: 650; }
+  .guide-body .hint { margin: 3px 0 0; }
+  .guide-body .row { margin-top: 8px; }
+  .track { height: 5px; border-radius: 99px; background: #202633; overflow: hidden; margin: 9px 0 14px; }
+  .track > div { height: 100%; width: 0; background: var(--accent); transition: width 0.25s ease; }
+  ol.samples { margin: 8px 0 12px; padding: 0; list-style: none; display: grid; gap: 5px; }
+  ol.samples li {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    color: #c6cfdb;
+    background: var(--panel-2);
+    border: 1px solid var(--line-soft);
+    border-radius: 7px;
+    padding: 6px 9px;
+  }
+  ol.samples:empty { display: none; }
+  .split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+  .saved {
+    border: 1px solid var(--line-soft);
+    border-radius: 10px;
+    background: var(--panel-2);
+    padding: 10px 12px;
+    font-size: 12.5px;
+  }
+  .saved b { color: var(--accent); }
+
+  .live-wrap {
+    position: relative;
+    border-radius: 11px;
+    overflow: hidden;
+    background:
+      repeating-linear-gradient(45deg, #0c0f14 0 10px, #0e1218 10px 20px);
+    border: 1px solid var(--line-soft);
+    min-height: 190px;
+  }
+  .live-wrap .live-slot { min-height: 190px; }
+  img.live {
+    display: block;
+    width: 100%;
+    height: auto;
+    background: #080a0e;
+  }
+  img.live.clickable { cursor: crosshair; }
+  .box-overlay {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+  }
+  .live-label {
+    position: absolute;
+    right: 9px;
+    bottom: 9px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: rgba(9, 11, 15, 0.72);
+    border: 1px solid var(--line);
+    color: #c8d0db;
+    font-size: 11px;
+    pointer-events: none;
+  }
+
+  .pads { display: grid; gap: 8px; margin-top: 10px; }
+  .pads.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .pads.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .pads.actions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .keyboard {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 10px;
+  }
+  .keyboard .key { min-height: 56px; padding: 8px 9px; }
+  .keyboard .key span { white-space: nowrap; }
+  .k-q { grid-column: 1; grid-row: 1; }
+  .k-w { grid-column: 2; grid-row: 1; }
+  .k-e { grid-column: 3; grid-row: 1; }
+  .k-a { grid-column: 1; grid-row: 2; }
+  .k-s { grid-column: 2; grid-row: 2; }
+  .k-d { grid-column: 3; grid-row: 2; }
+  .k-f { grid-column: 4; grid-row: 2; }
+  .k-z { grid-column: 1; grid-row: 3; }
+  .k-c { grid-column: 3; grid-row: 3; }
+  .k-v { grid-column: 4; grid-row: 3; }
+  details.more { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line-soft); }
+  details.more > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
+  details.more[open] > summary { color: var(--ink); }
+  details.more .guide { margin-top: 10px; }
+  .key {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    min-height: 62px;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel-2);
+    color: var(--ink);
+    user-select: none;
+    touch-action: none;
+  }
+  .key:hover:not(:disabled) { border-color: #3b4658; background: #1f2531; }
+  .key.active { border-color: var(--accent); background: #24301a; }
+  .key kbd { pointer-events: none; background: #10141b; }
+  .key span { font-size: 11.5px; color: var(--muted); pointer-events: none; }
+  .key.action { min-height: 44px; flex-direction: row; align-items: center; justify-content: center; gap: 7px; }
+  .key.action span { color: var(--ink); }
+  .readout {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 10px;
+  }
+  .readout div {
+    background: var(--panel-2);
+    border: 1px solid var(--line-soft);
+    border-radius: 8px;
+    padding: 7px 9px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+  }
+  .readout span { display: block; color: var(--muted); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 7px 6px; border-bottom: 1px solid var(--line-soft); }
+  th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: #171c25; }
+  tbody tr.selected { background: #1d2717; }
+  .slider-row { display: grid; grid-template-columns: 105px minmax(0, 1fr) 82px; align-items: center; gap: 10px; margin-top: 10px; }
+  .slider-row label { font-size: 12px; color: var(--muted); }
+  .slider-row output { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; text-align: right; color: var(--ink); }
+  input[type="range"] { padding: 0; border: 0; background: transparent; box-shadow: none; accent-color: var(--accent); }
+
+  .rerun {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .rerun .head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--line);
+  }
+  .rerun .head .left { display: flex; align-items: center; gap: 8px; }
+  .rerun .dot { width: 8px; height: 8px; border-radius: 50%; background: #4b5563; }
+  .rerun .dot.on { background: var(--accent); box-shadow: 0 0 8px rgba(184, 243, 107, 0.5); }
+  .rerun p { padding: 9px 14px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line-soft); }
+  iframe { flex: 1; width: 100%; border: 0; background: #0a0c10; }
+  .rerun .empty {
+    flex: 1;
+    display: grid;
+    place-items: center;
+    padding: 20px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 12.5px;
+  }
+  .rerun .empty[hidden] { display: none; }
+  .rerun iframe[hidden] { display: none; }
+
+  @media (max-width: 1200px), (max-aspect-ratio: 1/1) {
+    body { grid-template-columns: 196px minmax(0, 1fr); overflow: auto; }
+    .workspace { height: auto; min-height: 100vh; overflow: visible; }
+    .layout { grid-template-columns: minmax(0, 1fr); flex: none; overflow: visible; }
+    .task { overflow: visible; padding-right: 0; }
+    .rerun { height: clamp(360px, 58vh, 640px); min-height: 0; }
+    .readout { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  }
+  @media (max-width: 760px) {
+    body { grid-template-columns: 1fr; }
+    aside.nav { position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center; padding: 10px; }
+    .brand { margin: 0 10px 0 4px; }
+    .group { display: none; }
+    nav { display: flex; flex-wrap: wrap; gap: 4px; }
+    nav button { width: auto; }
+    .nav-note { display: none; }
+    .topbar { flex-wrap: wrap; }
+    .layout { padding: 12px; }
+    .grid-4, .stat-grid, .split, .grid-2 { grid-template-columns: 1fr 1fr; }
+  }
+</style>
+</head>
+<body>
+<aside class="nav">
+  <div class="brand">
+    <span class="mark">S</span>
+    <span>SO-101<small>workshop</small></span>
+  </div>
+  <nav>
+    <p class="group">Hardware</p>
+    <button type="button" data-page="hardware">Hardware</button>
+    <p class="group">Calibration</p>
+    <button type="button" data-page="handeye">Hand-eye</button>
+    <button type="button" data-page="intrinsics">Intrinsics</button>
+    <p class="group">Tasks</p>
+    <button type="button" data-page="teleop">Teleop</button>
+    <button type="button" data-page="go">Click and go</button>
+    <button type="button" data-page="pick">Click and pick</button>
+    <button type="button" data-page="detect">Detect and pick</button>
+  </nav>
+  <div class="nav-note"><b>Local only.</b> The arm, the camera, and E-stop run in this process. Nothing here needs the cloud.</div>
+</aside>
+
+<div class="workspace">
+  <header class="topbar">
+    <div class="left">
+      <h1 id="title">Hardware</h1>
+      <div class="pills" id="pills"></div>
+    </div>
+    <div class="safety">
+      <span class="link" id="link">local</span>
+      <button class="btn ghost" id="keys-toggle" type="button" aria-pressed="false" title="Teleop keys turn on with the Teleop tab. Click to keep them on across tabs.">Key teleop: off</button>
+      <button class="btn ghost" id="hold" type="button">Torque on</button>
+      <button class="btn danger" id="estop" type="button" title="Esc stops the arm">E-stop<sup>Esc</sup></button>
+    </div>
+  </header>
+
+  <p class="message" id="message">Not connected</p>
+
+  <div class="layout">
+    <div class="task">
+      <!-- ================= HARDWARE ================= -->
+      <section class="panel" data-panel="hardware">
+        <article class="card">
+          <div class="card-head">
+            <h2>Station</h2>
+            <button class="btn small quiet" id="refresh-status" type="button">Refresh</button>
+          </div>
+          <p class="hint" id="station-state">Reading station status.</p>
+          <div class="stat-grid" style="margin-top:12px">
+            <div class="stat"><span>Arm</span><b id="stat-arm">off</b></div>
+            <div class="stat"><span>Camera</span><b id="stat-camera">off</b></div>
+            <div class="stat"><span>Torque</span><b id="stat-torque">off</b></div>
+          </div>
+        </article>
+
+        <article class="card">
+          <h2>Arm connection</h2>
+          <p class="hint">Connect the saved port, or use the mock arm without hardware.</p>
+          <label class="field" for="ports">Serial port</label>
+          <select id="ports"></select>
+          <div class="row">
+            <button class="btn quiet" id="refresh-ports" type="button">List ports</button>
+            <button class="btn good" id="connect-arm" type="button">Connect arm</button>
+            <button class="btn quiet" id="connect-mock" type="button">Mock arm</button>
+            <button class="btn quiet" id="connect-raw" type="button">Connect to calibrate</button>
+          </div>
+          <p class="hint" style="margin-top:10px">Connect to calibrate skips the saved motor range.</p>
+          <details class="more">
+            <summary>Can't find the arm? Find its USB port</summary>
+            <p class="hint" style="margin-top:8px">Do this once per adapter.</p>
+            <ol class="guide">
+              <li class="guide-step" id="port-step-1">
+                <span class="guide-num">1</span>
+                <div class="guide-body">
+                  <strong>Plug in the arm adapter and record the ports</strong>
+                  <button class="btn quiet" id="ports-mark" type="button" disabled>Record connected ports</button>
+                </div>
+              </li>
+              <li class="guide-step" id="port-step-2">
+                <span class="guide-num">2</span>
+                <div class="guide-body">
+                  <strong>Unplug only the arm adapter, then find what disappeared</strong>
+                  <p class="hint">Only this adapter should disappear.</p>
+                  <button class="btn quiet" id="ports-gone" type="button" disabled>Find the removed port</button>
+                  <p class="hint" id="port-found">No port found yet.</p>
+                </div>
+              </li>
+              <li class="guide-step" id="port-step-3">
+                <span class="guide-num">3</span>
+                <div class="guide-body">
+                  <strong>Save it as the arm port</strong>
+                  <p class="hint">Plug it back in, then save.</p>
+                  <div class="row">
+                    <button class="btn good" id="ports-save" type="button" disabled>Save arm port</button>
+                  </div>
+                </div>
+              </li>
+            </ol>
+          </details>
+          <details class="more">
+            <summary>Motor calibration</summary>
+            <div class="warn-box" style="margin-top:10px"><strong>Safety.</strong> Calibration turns torque off. Support the arm; it can fall.</div>
+            <p class="hint" style="margin-top:10px">Set each joint's midpoint, then move every joint except wrist roll through its travel and save the limits.</p>
+            <button class="btn wide" id="motor-start" type="button">Start motor calibration</button>
+            <button class="btn wide" id="midpoint" type="button" disabled>Set motor midpoint</button>
+            <div class="row">
+              <button class="btn quiet" id="range-start" type="button" disabled>Start range</button>
+              <button class="btn" id="range-stop" type="button" disabled>Save range</button>
+            </div>
+            <p class="hint" style="margin-top:10px" id="motor-hint">Connect to calibrate first if the arm has no saved range. Motion stays locked until a range is stored.</p>
+          </details>
+        </article>
+
+        <article class="card">
+          <h2>Camera connection</h2>
+          <p class="hint">The agent is the only camera client.</p>
+          <label class="field" for="camera-profile">Camera profile</label>
+          <select id="camera-profile"></select>
+          <p class="hint" id="camera-detail" style="margin-top:6px">Loading camera profiles.</p>
+          <p class="hint" id="camera-live" style="margin-top:4px">No stream</p>
+          <div class="live-wrap" style="margin-top:12px"><div class="live-slot" id="slot-camera"></div><span class="live-label">Camera preview</span></div>
+          <div class="grid-2">
+            <div>
+              <label class="field" for="camera-device">Device index (webcam)</label>
+              <input id="camera-device" type="number" min="0" placeholder="auto" list="video-devices">
+              <datalist id="video-devices"></datalist>
+            </div>
+            <div>
+              <label class="field" for="camera-url">reCamera URL / WebSocket</label>
+              <input id="camera-url" type="text" placeholder="ws://192.168.42.1:8090/ws/boxes">
+            </div>
+          </div>
+          <div class="grid-4" style="margin-top:2px">
+            <div><label class="field" for="camera-width">Width</label><input id="camera-width" type="number" min="1"></div>
+            <div><label class="field" for="camera-height">Height</label><input id="camera-height" type="number" min="1"></div>
+            <div><label class="field" for="camera-fps">FPS</label><input id="camera-fps" type="number" min="1"></div>
+            <div>
+              <label class="field">Probe</label>
+              <span class="hint" id="probe-result">no stream yet</span>
+            </div>
+          </div>
+          <div class="row">
+            <button class="btn quiet" id="camera-refresh" type="button">Refresh list</button>
+            <button class="btn good" id="camera-connect" type="button">Connect camera</button>
+            <button class="btn" id="camera-disconnect" type="button">Disconnect camera</button>
+            <button class="btn quiet" id="probe" type="button">Probe reCamera</button>
+          </div>
+          <p class="hint" style="margin-top:10px">Demo is synthetic. reCamera needs 192.168.42.1 on the USB network; RealSense needs the vision extra.</p>
+        </article>
+
+        </article>
+      </section>
+
+      <!-- ================= HAND-EYE ================= -->
+      <section class="panel" data-panel="handeye" hidden>
+        <article class="card">
+          <div class="steps"><strong>Hand-eye calibration</strong><span id="hand-step">Step 1 of 4</span></div>
+          <div class="track"><div id="hand-bar"></div></div>
+          <p class="hint" id="hand-instruction">Connect the arm and the camera on Hardware.</p>
+          <div class="warn-box" style="margin-top:10px"><strong>Safety.</strong> The camera stays fixed. Torque off lets you pose the arm by hand. Support it, and keep the fingers clear of the table.</div>
+        </article>
+
+        <article class="card">
+          <div class="card-head"><h2>Automatic calibration</h2><span class="hint" id="auto-count">idle</span></div>
+          <p class="hint">Ten fixed poses. The arm moves by itself, so keep the area clear.</p>
+          <div class="track" style="margin:12px 0 8px"><div id="auto-bar"></div></div>
+          <p class="hint" id="auto-result" style="margin-top:6px">Connect the arm and the camera, then turn torque on.</p>
+          <div class="row" style="margin-top:10px">
+            <button class="btn good" id="auto-tag" type="button">Run auto calibration</button>
+            <button class="btn quiet" id="auto-stop" type="button">Stop</button>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-head"><h2>Live tag view</h2><span class="hint" id="hand-preview">Camera is off.</span></div>
+          <div class="live-wrap"><div class="live-slot" id="slot-handeye"></div><span class="live-label">Calibration camera</span></div>
+          <div class="readout">
+            <div><span>X mm</span><b id="tag-x">—</b></div>
+            <div><span>Y mm</span><b id="tag-y">—</b></div>
+            <div><span>Z mm</span><b id="tag-z">—</b></div>
+            <div><span>Roll °</span><b id="tag-roll">—</b></div>
+            <div><span>Pitch °</span><b id="tag-pitch">—</b></div>
+            <div><span>Yaw °</span><b id="tag-yaw">—</b></div>
+          </div>
+          <p class="hint" style="margin-top:8px">Settle with one AprilTag in view, then capture.</p>
+        </article>
+
+        <article class="card">
+          <div class="card-head"><h2>Poses</h2><span class="hint" id="hand-count">0 poses</span></div>
+          <ol class="samples" id="hand-list"></ol>
+          <div class="row" style="margin-top:4px">
+            <button class="btn good" id="tag" type="button">Capture pose</button>
+            <button class="btn quiet" id="hand-reset" type="button">Reset poses</button>
+            <button class="btn" id="solve-tag" type="button">Save hand-eye</button>
+          </div>
+          <div class="saved" style="margin-top:12px">Saved file: <b id="saved-residual">not solved</b></div>
+          <p class="hint" style="margin-top:8px">Four poses minimum, spread about two rotation axes.</p>
+        </article>
+      </section>
+
+      <!-- ================= INTRINSICS ================= -->
+      <section class="panel" data-panel="intrinsics" hidden>
+        <article class="card">
+          <div class="steps"><span id="board-count">0 chessboard views</span><span>10 views</span></div>
+          <div class="track"><div id="board-bar"></div></div>
+          <p class="hint">Hold the 8 by 11 board in view. Tilt it across the image. Ten views required.</p>
+        </article>
+        <article class="card">
+          <h2>Live board view</h2>
+          <div class="live-wrap" style="margin-top:10px"><div class="live-slot" id="slot-intrinsics"></div><span class="live-label">Chessboard camera</span></div>
+          <div class="row">
+            <button class="btn" id="board" type="button">Capture chessboard</button>
+            <button class="btn quiet" id="board-reset" type="button">Reset views</button>
+            <button class="btn" id="solve-board" type="button">Solve intrinsics</button>
+          </div>
+          <p class="hint" id="intrinsics-result" style="margin-top:10px">Saves fx, fy, and distortion into the active camera profile.</p>
+        </article>
+      </section>
+
+      <!-- ================= TELEOP ================= -->
+      <section class="panel" data-panel="teleop" hidden>
+        <article class="card">
+          <div class="card-head"><h2>Teleop</h2><span class="hint" id="teleop-hint">Connect an arm to move it.</span></div>
+          <p class="hint">Hold a key or button. Esc stops.</p>
+          <div class="keyboard">
+            <button class="key k-q" type="button" data-token="q" data-hold><kbd>Q</kbd><span>Z down</span></button>
+            <button class="key k-w" type="button" data-token="w" data-hold><kbd>W</kbd><span>+X</span></button>
+            <button class="key k-e" type="button" data-token="e" data-hold><kbd>E</kbd><span>Z up</span></button>
+            <button class="key k-a" type="button" data-token="a" data-hold><kbd>A</kbd><span>+Y</span></button>
+            <button class="key k-s" type="button" data-token="s" data-hold><kbd>S</kbd><span>−X</span></button>
+            <button class="key k-d" type="button" data-token="d" data-hold><kbd>D</kbd><span>−Y</span></button>
+            <button class="key k-f" type="button" data-token="f" data-hold><kbd>F</kbd><span>Pitch +</span></button>
+            <button class="key k-z" type="button" data-token="z" data-hold><kbd>Z</kbd><span>Roll +</span></button>
+            <button class="key k-c" type="button" data-token="c" data-hold><kbd>C</kbd><span>Roll −</span></button>
+            <button class="key k-v" type="button" data-token="v" data-hold><kbd>V</kbd><span>Pitch −</span></button>
+          </div>
+          <div class="pads actions">
+            <button class="key action" type="button" data-token="h" data-tap aria-label="H · Home"><kbd>H</kbd><span>Home</span></button>
+            <button class="key action" type="button" data-token="r" data-tap aria-label="R · Rest"><kbd>R</kbd><span>Rest</span></button>
+            <button class="key action" type="button" data-token="space" data-tap aria-label="Space · Gripper"><kbd>Space</kbd><span>Gripper</span></button>
+            <button class="key action" type="button" data-token="p" data-tap><kbd>P</kbd><span>Pose</span></button>
+            <button class="key action" type="button" data-token="+" data-tap><kbd>+</kbd><span>Step +</span></button>
+            <button class="key action" type="button" data-token="-" data-tap><kbd>−</kbd><span>Step −</span></button>
+          </div>
+          <div class="slider-row">
+            <label for="step-range">Step</label>
+            <input id="step-range" type="range" min="5" max="50" step="5" value="5">
+            <output id="step-value">5 mm</output>
+          </div>
+          <div class="slider-row">
+            <label for="speed-range">Joint speed</label>
+            <input id="speed-range" type="range" min="10" max="90" step="5" value="90">
+            <output id="speed-value">90 °/s</output>
+          </div>
+          <p class="hint" style="margin-top:8px">Gripper: <b id="gripper-state">—</b>.</p>
+        </article>
+        <article class="card">
+          <h2>Pose</h2>
+          <div class="readout">
+            <div><span>X m</span><b id="pose-x">—</b></div>
+            <div><span>Y m</span><b id="pose-y">—</b></div>
+            <div><span>Z m</span><b id="pose-z">—</b></div>
+            <div><span>Roll °</span><b id="pose-roll">—</b></div>
+            <div><span>Pitch °</span><b id="pose-pitch">—</b></div>
+            <div><span>Yaw °</span><b id="pose-yaw">—</b></div>
+          </div>
+          <table style="margin-top:12px">
+            <thead><tr><th>Joint</th><th>Deg</th><th>Limits</th></tr></thead>
+            <tbody id="joints"></tbody>
+          </table>
+        </article>
+      </section>
+
+      <!-- ================= CLICK AND GO ================= -->
+      <section class="panel" data-panel="go" hidden>
+        <article class="card">
+          <div class="card-head"><h2>Click and go</h2><span class="hint" id="go-clearance">Moves 20 mm above the table point.</span></div>
+          <p class="hint">Click the table. A newer click cancels the move.</p>
+        </article>
+        <article class="card">
+          <div class="live-wrap"><div class="live-slot" id="slot-go"></div><span class="live-label">Click the image</span></div>
+          <p class="hint" id="go-result" style="margin-top:9px">No click yet.</p>
+        </article>
+      </section>
+
+      <!-- ================= CLICK AND PICK ================= -->
+      <section class="panel" data-panel="pick" hidden>
+        <article class="card">
+          <div class="card-head"><h2>Click and pick</h2><span class="hint" id="pick-busy"></span></div>
+          <p class="hint" id="pick-summary">Click the image.</p>
+          <div class="live-wrap"><div class="live-slot" id="slot-pick"></div><span class="live-label">Click to pick</span></div>
+          <p class="hint" id="pick-result" style="margin-top:9px">No pick yet.</p>
+        </article>
+      </section>
+
+      <!-- ================= DETECT AND PICK ================= -->
+      <section class="panel" data-panel="detect" hidden>
+        <article class="card">
+          <div class="card-head"><h2>Detect and pick</h2><span class="hint" id="detect-busy"></span></div>
+          <p class="hint">Click inside a box. The arm picks its centre.</p>
+          <div class="live-wrap">
+            <div class="live-slot" id="slot-detect"></div>
+            <canvas id="detect-overlay" class="box-overlay"></canvas>
+            <span class="live-label">Click a box</span>
+          </div>
+          <p class="hint" id="detect-result" style="margin-top:9px">No pick yet.</p>
+        </article>
+        <article class="card">
+          <div class="card-head"><h2>YOLO boxes</h2><span class="hint" id="det-status">Waiting for boxes.</span></div>
+          <p class="hint" style="margin-top:5px">When boxes overlap, the smallest one under the click is selected.</p>
+          <table style="margin-top:10px">
+            <thead><tr><th>Label</th><th>Score</th><th>Centre px</th><th></th></tr></thead>
+            <tbody id="boxes"></tbody>
+          </table>
+        </article>
+      </section>
+    </div>
+
+    <aside class="rerun">
+      <div class="head">
+        <div class="left"><span class="dot" id="rerun-dot"></span><h2>Rerun</h2></div>
+        <div class="row tight" style="margin:0">
+          <button class="btn small quiet" id="rerun-reload" type="button">Reload</button>
+          <button class="btn small good" id="rerun-start" type="button">Start Rerun</button>
+        </div>
+      </div>
+      <p id="rerun-note">Opening the arm view.</p>
+      <div class="empty" id="rerun-empty">The Rerun panel shows the arm, the tag axes, and the camera while you work.</div>
+      <iframe id="rerun" title="Rerun arm view" hidden></iframe>
+    </aside>
+  </div>
+</div>
+
+<div id="live-holder" hidden><img id="live" class="live" alt="Live camera"></div>
+
+<script>
+(() => {
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+  const live = $("live");
+  const TITLES = {
+    hardware: "Hardware",
+    handeye: "Hand-eye calibration",
+    intrinsics: "Camera intrinsics",
+    teleop: "Teleop",
+    go: "Click and go",
+    pick: "Click and pick",
+    detect: "Detect and pick",
+  };
+  // Same flags the API checks. A page stays off until every listed flag is on.
+  const PAGE_FEATURE = {
+    hardware: ["connect"],
+    handeye: ["calibration"],
+    intrinsics: ["calibration"],
+    teleop: ["teleop"],
+    go: ["click_and_go"],
+    pick: ["click_and_go"],
+    detect: ["click_and_go", "yolo"],
+  };
+  const SLOT = {
+    hardware: "slot-camera",
+    handeye: "slot-handeye",
+    intrinsics: "slot-intrinsics",
+    go: "slot-go",
+    pick: "slot-pick",
+    detect: "slot-detect",
+  };
+  const KEYS = new Set([
+    "w", "a", "s", "d", "q", "e", "z", "c", "f", "v",
+    "h", "r", "p", "space", "+", "-", "=",
+  ]);
+
+  const state = {
+    page: "hardware",
+    status: null,
+    profiles: [],
+    profileSig: "",
+    deviceSig: "",
+    appliedProfile: "",
+    jointsSig: "",
+    boxSig: "",
+    boxes: [],
+    resolution: null,
+    handSig: "",
+    viewerMode: "",
+    featuresSig: "",
+    features: null,
+    portsMarked: false,
+    foundPort: "",
+    portSaved: false,
+    viewerUrl: "",
+    lastServerMessage: "",
+    localUntil: 0,
+    statusBusy: false,
+    statusFailures: 0,
+    cameraConnected: false,
+    previewBusy: false,
+    pickBusy: false,
+    keysOn: false,
+    motorArmed: false,
+    configTimer: 0,
+    lastStatusError: "",
+  };
+  let socket = null;
+
+  function note(text, holdMs = 2800) {
+    $("message").textContent = String(text === null || text === undefined ? "" : text);
+    state.localUntil = performance.now() + holdMs;
+  }
+
+  async function api(url, body) {
+    const options = { method: body === undefined ? "GET" : "POST", cache: "no-store" };
+    if (body !== undefined) {
+      options.headers = { "Content-Type": "application/json" };
+      options.body = JSON.stringify(body);
+    }
+    const response = await fetch(url, options);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.detail || response.statusText || `HTTP ${response.status}`);
+    }
+    return data;
+  }
+
+  async function run(task, done) {
+    try {
+      const data = await task();
+      if (done) note(done(data));
+      else if (data && data.message) note(data.message);
+      return data;
+    } catch (error) {
+      note(error.message || String(error));
+      return null;
+    }
+  }
+
+  function pill(label, value, tone) {
+    const el = document.createElement("span");
+    el.className = "pill" + (tone ? " " + tone : "");
+    const name = document.createElement("span");
+    name.textContent = label;
+    const strong = document.createElement("b");
+    strong.textContent = value;
+    el.append(name, strong);
+    return el;
+  }
+
+  function mm(value) {
+    return (Number(value) * 1000).toFixed(1);
+  }
+
+  function targetText(values) {
+    if (!Array.isArray(values) || values.length < 3) return "—";
+    return values.slice(0, 3).map((value) => Number(value).toFixed(3)).join(", ") + " m";
+  }
+
+  /* ---------------- pages ---------------- */
+
+  let streamReady = false;
+  let streamTimer = 0;
+
+  function cameraOn() {
+    return Boolean(state.status && state.status.camera && state.status.camera.connected);
+  }
+
+  function autoRunning() {
+    const auto = state.status && state.status.auto_hand_eye;
+    return Boolean(auto && auto.running);
+  }
+
+  function startStream() {
+    if (!streamReady) return;
+    clearTimeout(streamTimer);
+    streamTimer = 0;
+    // A cache-busting query makes the browser reopen the multipart stream.
+    live.src = `/video.mjpg?t=${Date.now()}`;
+  }
+
+  function updateLiveVisibility() {
+    const visible = Boolean(SLOT[state.page]) && cameraOn();
+    live.style.display = visible ? "block" : "none";
+    live.classList.toggle(
+      "clickable",
+      visible && (state.page === "go" || state.page === "pick" || state.page === "detect"),
+    );
+  }
+
+  function setLiveSlot(page) {
+    const slot = SLOT[page] ? $(SLOT[page]) : null;
+    if (slot) slot.append(live);
+    else $("live-holder").append(live);
+    updateLiveVisibility();
+  }
+
+  live.addEventListener("error", () => {
+    if (!streamReady || !cameraOn() || streamTimer) return;
+    streamTimer = setTimeout(() => { streamTimer = 0; startStream(); }, 1500);
+  });
+
+  function show(page) {
+    if (!TITLES[page]) page = "hardware";
+    if (page !== state.page) releaseHeldKeys();
+    if (page === "teleop") state.keysOn = true;
+    else if (state.page === "teleop") state.keysOn = false;
+    state.page = page;
+    renderKeysToggle();
+    document.querySelectorAll("[data-panel]").forEach((panel) => {
+      panel.hidden = panel.dataset.panel !== page;
+    });
+    document.querySelectorAll("[data-page]").forEach((button) => {
+      button.classList.toggle("active", button.dataset.page === page);
+    });
+    $("title").textContent = TITLES[page];
+    setLiveSlot(page);
+    const mode = page === "handeye" ? "hand-eye" : "arm";
+    if (mode !== state.viewerMode) {
+      state.viewerMode = mode;
+      api("/api/viewer/mode", { mode }).catch(() => {});
+    }
+    if (page === "hardware") loadCameras().catch(() => {});
+    if (page === "handeye") refreshPreview();
+    if (page === "intrinsics") refreshBoardPreview();
+    if (page === "detect") refreshDetections();
+  }
+
+  document.querySelectorAll("[data-page]").forEach((button) => {
+    button.addEventListener("click", () => show(button.dataset.page));
+  });
+
+  function pageFeatures(page) {
+    const need = PAGE_FEATURE[page];
+    return Array.isArray(need) ? need : [];
+  }
+
+  function applyFeatures(features) {
+    state.features = features || {};
+    const sig = JSON.stringify(features || {});
+    if (sig !== state.featuresSig) {
+      state.featuresSig = sig;
+      document.querySelectorAll("[data-page]").forEach((button) => {
+        const missing = pageFeatures(button.dataset.page).filter(
+          (name) => features && features[name] === false,
+        );
+        button.disabled = missing.length > 0;
+        button.title = missing.length
+          ? `${missing.join(", ")} disabled in workshop.yaml`
+          : "";
+      });
+    }
+    syncPortSteps();
+  }
+
+  function renderMotion(motion) {
+    if (!motion) return;
+    const hover = Number(motion.hover_m) * 1000;
+    const height = Number(motion.pick_height_m) * 1000;
+    const approach = Number(motion.approach_m) * 1000;
+    if (Number.isFinite(hover)) {
+      $("go-clearance").textContent = `Moves ${hover.toFixed(0)} mm above the table point.`;
+    }
+    if (Number.isFinite(height) && Number.isFinite(approach)) {
+      $("pick-summary").textContent =
+        `Click the table to pick ${height.toFixed(0)} mm above it. ` +
+        `The arm stops ${approach.toFixed(0)} mm higher, then moves down, closes, and releases at rest.`;
+    }
+  }
+
+  function syncPortSteps() {
+    const enabled = !state.features || state.features.calibration !== false;
+    $("ports-mark").disabled = !enabled || state.portsMarked;
+    $("ports-gone").disabled = !enabled || !state.portsMarked;
+    $("ports-save").disabled = !enabled || !state.foundPort;
+    $("port-step-1").classList.toggle("done", state.portsMarked);
+    $("port-step-1").classList.toggle("active", enabled && !state.portsMarked);
+    $("port-step-2").classList.toggle("done", Boolean(state.foundPort));
+    $("port-step-2").classList.toggle("active", state.portsMarked && !state.foundPort);
+    $("port-step-3").classList.toggle("done", state.portSaved);
+    $("port-step-3").classList.toggle("active", Boolean(state.foundPort) && !state.portSaved);
+  }
+
+  /* ---------------- status ---------------- */
+
+  function renderPose(arm) {
+    const pose = arm.pose || {};
+    $("pose-x").textContent = pose.x == null ? "—" : Number(pose.x).toFixed(3);
+    $("pose-y").textContent = pose.y == null ? "—" : Number(pose.y).toFixed(3);
+    $("pose-z").textContent = pose.z == null ? "—" : Number(pose.z).toFixed(3);
+    $("pose-roll").textContent = pose.roll == null ? "—" : Number(pose.roll).toFixed(1);
+    $("pose-pitch").textContent = pose.pitch == null ? "—" : Number(pose.pitch).toFixed(1);
+    $("pose-yaw").textContent = pose.yaw == null ? "—" : Number(pose.yaw).toFixed(1);
+  }
+
+  function renderJoints(arm) {
+    const joints = arm.joints || {};
+    const sig = JSON.stringify([joints, arm.limits]);
+    if (sig === state.jointsSig) return;
+    state.jointsSig = sig;
+    const body = $("joints");
+    body.replaceChildren();
+    const limits = arm.limits || {};
+    Object.keys(joints).forEach((name) => {
+      const tr = document.createElement("tr");
+      const joint = document.createElement("td");
+      joint.textContent = name.replaceAll("_", " ");
+      const value = document.createElement("td");
+      value.textContent = Number(joints[name]).toFixed(1);
+      const range = document.createElement("td");
+      const pair = limits[name];
+      range.textContent = pair ? `${Number(pair[0]).toFixed(0)} to ${Number(pair[1]).toFixed(0)}` : "—";
+      tr.append(joint, value, range);
+      body.append(tr);
+    });
+  }
+
+  function renderHandEye(status) {
+    const samples = status.hand_eye_samples || [];
+    const arm = status.arm || {};
+    const cam = status.camera || {};
+    const ready = Boolean(arm.connected && cam.connected);
+    let step = 1;
+    let instruction = "Connect the arm and the camera on Hardware.";
+    if (ready && samples.length === 0) {
+      step = 2;
+      instruction = "Settle with exactly one AprilTag in view. Capture the first pose.";
+    } else if (ready && samples.length < 4) {
+      step = 3;
+      instruction = "Capture this pose, then change the wrist angle. Four different poses are the minimum.";
+    } else if (samples.length >= 4) {
+      step = 4;
+      instruction = "Save. The residual is written to the station hand_eye.yaml.";
+    }
+    $("hand-step").textContent = `Step ${step} of 4`;
+    $("hand-bar").style.width = `${(step / 4) * 100}%`;
+    $("hand-instruction").textContent = instruction;
+    $("hand-count").textContent = `${samples.length} poses`;
+    const handSig = JSON.stringify(samples);
+    if (handSig !== state.handSig) {
+      state.handSig = handSig;
+      const list = $("hand-list");
+      list.replaceChildren();
+      samples.forEach((sample, index) => {
+        const item = document.createElement("li");
+        item.textContent = `Pose ${index + 1}: ${[sample.x, sample.y, sample.z].map(mm).join(", ")} mm`;
+        list.append(item);
+      });
+    }
+    const saved = status.hand_eye || {};
+    $("saved-residual").textContent = saved.saved
+      ? `${mm(saved.max_residual_m)} mm · ${Number(saved.max_residual_deg).toFixed(1)}°`
+      : "not solved";
+
+    const auto = status.auto_hand_eye || {};
+    const autoRunning = Boolean(auto.running);
+    const autoTotal = Math.max(Number(auto.total) || 0, 1);
+    const captured = Number(auto.captured) || 0;
+    $("auto-count").textContent = autoRunning
+      ? `${auto.step || 0} / ${autoTotal}`
+      : auto.error ? "failed"
+        : auto.cancelled ? "stopped"
+          : auto.residual_m != null ? "saved" : "idle";
+    $("auto-bar").style.width = `${Math.min(captured / autoTotal, 1) * 100}%`;
+    $("auto-result").textContent = auto.error || auto.message
+      || "Connect the arm and the camera, then turn torque on.";
+    $("auto-result").className = "hint"
+      + (auto.error ? " bad" : autoRunning ? " warn" : auto.residual_m != null ? " good" : "");
+    $("auto-tag").disabled = autoRunning || !ready || !arm.torque_on;
+    $("auto-tag").textContent = autoRunning ? "Auto calibration running" : "Run auto calibration";
+    $("auto-stop").disabled = !autoRunning;
+    $("tag").disabled = autoRunning;
+    $("hand-reset").disabled = autoRunning;
+    $("solve-tag").disabled = autoRunning;
+
+    const views = status.intrinsics_views || 0;
+    $("board-count").textContent = `${views} chessboard views`;
+    $("board-bar").style.width = `${Math.min(views, 10) / 10 * 100}%`;
+  }
+
+  function profileSignature(profiles) {
+    return profiles.map((p) => `${p.name}:${p.active}:${p.available}:${p.reason || ""}`).join("|");
+  }
+
+  function describeProfile(profile) {
+    if (!profile) return "No camera profiles found.";
+    const bits = [`Backend ${profile.backend || "?"}`];
+    if (profile.width || profile.height) bits.push(`${profile.width || "?"}×${profile.height || "?"}`);
+    if (profile.fps) bits.push(`${profile.fps} fps`);
+    if (profile.backend === "webcamera") bits.push(`device ${profile.device == null ? "auto" : profile.device}`);
+    if (profile.backend === "recamera") bits.push(profile.url || "no URL");
+    if (profile.backend === "realsense") bits.push(profile.serial ? `serial ${profile.serial}` : "any device");
+    if (!profile.available) bits.push(`unavailable: ${profile.reason}`);
+    return bits.join(" · ");
+  }
+
+  function applyProfileFields(profile) {
+    if (!profile) return;
+    $("camera-device").value = profile.device == null ? "" : String(profile.device);
+    $("camera-url").value = profile.url || "";
+    $("camera-width").value = profile.width == null ? "" : String(profile.width);
+    $("camera-height").value = profile.height == null ? "" : String(profile.height);
+    $("camera-fps").value = profile.fps == null ? "" : String(profile.fps);
+    state.appliedProfile = profile.name;
+  }
+
+  function renderProfiles(profiles, active) {
+    state.profiles = profiles || [];
+    const select = $("camera-profile");
+    const sig = profileSignature(state.profiles);
+    if (sig !== state.profileSig) {
+      state.profileSig = sig;
+      const wanted = active || select.value || "";
+      select.replaceChildren();
+      state.profiles.forEach((profile) => {
+        const option = document.createElement("option");
+        option.value = profile.name;
+        option.dataset.profile = profile.name;
+        option.textContent = `${profile.label || profile.name} (${profile.backend || "?"})`
+          + (profile.available ? "" : " — unavailable");
+        select.append(option);
+      });
+      if (state.profiles.some((profile) => profile.name === wanted)) select.value = wanted;
+    }
+    const chosen = state.profiles.find((profile) => profile.name === select.value)
+      || state.profiles.find((profile) => profile.active);
+    if (chosen) {
+      $("camera-detail").textContent = describeProfile(chosen)
+        + (chosen.active ? " · active profile" : "");
+      if (state.appliedProfile !== chosen.name) applyProfileFields(chosen);
+    }
+  }
+
+  function renderDevices(devices) {
+    const list = (devices || []).join(",");
+    if (list === state.deviceSig) return;
+    state.deviceSig = list;
+    const datalist = $("video-devices");
+    datalist.replaceChildren();
+    (devices || []).forEach((device) => {
+      const option = document.createElement("option");
+      option.value = String(device);
+      option.textContent = `/dev/video${device}`;
+      datalist.append(option);
+    });
+  }
+
+  function renderCamera(camera) {
+    renderProfiles(camera.presets || [], camera.profile);
+    renderDevices(camera.devices || []);
+    const bits = [];
+    if (camera.connected) bits.push(`Streaming ${camera.width}×${camera.height}`);
+    else if (camera.connecting) bits.push("Opening the camera…");
+    else bits.push("No stream");
+    if (camera.intrinsics) {
+      bits.push(`fx ${Number(camera.intrinsics.fx).toFixed(1)} · fy ${Number(camera.intrinsics.fy).toFixed(1)}`);
+    }
+    if (camera.error) bits.push(camera.error);
+    $("camera-live").textContent = bits.join(" · ");
+    $("stat-camera").textContent = camera.connected ? "on" : camera.connecting ? "opening" : "off";
+    $("camera-connect").classList.toggle("good", !camera.connected);
+    $("camera-disconnect").classList.toggle("disconnect", Boolean(camera.connected));
+    if (!camera.connected) $("board").classList.remove("good");
+    if (camera.connected && !state.cameraConnected) startStream();
+    state.cameraConnected = Boolean(camera.connected);
+    updateLiveVisibility();
+  }
+
+  function renderStatus(status) {
+    state.status = status;
+    applyFeatures(status.features || {});
+    renderMotion(status.motion);
+    const arm = status.arm || {};
+    const camera = status.camera || {};
+    const teleop = status.teleop || {};
+
+    const pills = $("pills");
+    pills.replaceChildren(
+      pill("Arm", arm.connected ? (arm.mock ? "mock" : "live") : "off", arm.connected ? "good" : ""),
+      pill("Torque", arm.torque_on ? "on" : "off", arm.torque_on ? "good" : ""),
+      pill("E-stop", status.estop ? "ON" : "off", status.estop ? "bad" : ""),
+      pill("Camera", camera.connected ? "on" : camera.connecting ? "opening" : "off", camera.connected ? "good" : ""),
+      pill("Probe", status.probe ? (status.probe.ports && status.probe.ports["8090"] ? "stream" : "no stream") : "—"),
+    );
+
+    if (status.message && status.message !== state.lastServerMessage) {
+      state.lastServerMessage = status.message;
+      if (performance.now() > state.localUntil) $("message").textContent = status.message;
+    }
+
+    const bits = [];
+    if (arm.connected) {
+      bits.push(arm.mock ? "Mock arm" : `Live arm${arm.port ? " on " + arm.port : ""}`);
+      bits.push(arm.torque_on ? "torque on" : "torque off");
+      if (!arm.calibrated) bits.push("motors not calibrated");
+      if (arm.speed_deg_s != null) bits.push(`${Number(arm.speed_deg_s).toFixed(0)} °/s`);
+    } else {
+      bits.push("No arm connected");
+    }
+    if (arm.error) bits.push(arm.error);
+    $("station-state").textContent = bits.join(" · ");
+    $("stat-arm").textContent = arm.connected ? (arm.mock ? "mock" : "live") : "off";
+    $("stat-torque").textContent = arm.torque_on ? "on" : "off";
+    if (!arm.connected && state.motorArmed) disarmMotor();
+
+    renderCamera(camera);
+    renderHandEye(status);
+    renderPose(arm);
+    renderJoints(arm);
+
+    $("teleop-hint").textContent = arm.connected
+      ? `Keys live${arm.mock ? " (mock)" : ""}.`
+      : "Connect an arm to move it.";
+    if (document.activeElement !== $("step-range") && teleop.step_m != null) {
+      const step = Math.round(Number(teleop.step_m) * 1000);
+      $("step-range").value = String(step);
+      $("step-value").textContent = `${step} mm`;
+    }
+    if (document.activeElement !== $("speed-range") && arm.speed_deg_s != null) {
+      $("speed-range").value = String(Math.round(Number(arm.speed_deg_s)));
+      $("speed-value").textContent = `${Math.round(Number(arm.speed_deg_s))} °/s`;
+    }
+    $("gripper-state").textContent = teleop.gripper_closed == null
+      ? "—" : teleop.gripper_closed ? "closed" : "open";
+  }
+
+  async function refreshStatus() {
+    if (state.statusBusy) return;
+    state.statusBusy = true;
+    try {
+      const status = await api("/api/status");
+      state.statusFailures = 0;
+      state.lastStatusError = "";
+      $("link").textContent = socket && socket.readyState === WebSocket.OPEN ? "local · ws" : "local · http";
+      renderStatus(status);
+    } catch (error) {
+      // A slow serial or camera open can miss one poll. Only alarm after a
+      // few failures so a working station never flashes "unreachable".
+      state.statusFailures += 1;
+      if (state.statusFailures < 3) {
+        $("link").textContent = "reconnecting";
+        return;
+      }
+      $("link").textContent = "server unreachable";
+      const text = error.message || String(error);
+      if (text !== state.lastStatusError) {
+        state.lastStatusError = text;
+        note(`Workshop server: ${text}`, 6000);
+      }
+    } finally {
+      state.statusBusy = false;
+    }
+  }
+
+  /* ---------------- hardware ---------------- */
+
+  async function loadPorts() {
+    const data = await api("/api/ports");
+    const select = $("ports");
+    select.replaceChildren();
+    if (!data.ports || !data.ports.length) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "No serial ports found";
+      select.append(option);
+      return;
+    }
+    data.ports.forEach((port) => {
+      const option = document.createElement("option");
+      option.value = port;
+      option.textContent = port;
+      select.append(option);
+    });
+  }
+
+  async function loadCameras() {
+    const data = await api("/api/cameras");
+    renderProfiles(data.profiles || [], data.active);
+    renderDevices(data.devices || []);
+    return data;
+  }
+
+  $("refresh-status").addEventListener("click", refreshStatus);
+  $("refresh-ports").addEventListener("click", () => run(loadPorts, (data) => `${(data.ports || []).length} serial ports`));
+  async function connectArm(requireCalibration) {
+    const port = $("ports").value;
+    if (!port) {
+      note("Choose a serial port first");
+      return;
+    }
+    try {
+      const body = { port, mock: false };
+      if (!requireCalibration) body.require_calibration = false;
+      const data = await api("/api/arm/connect", body);
+      note(data.message);
+    } catch (error) {
+      // The adapter can re-enumerate (ttyACM1 -> ttyACM0) after a replug.
+      await loadPorts().catch(() => {});
+      note(`${error.message || error} · port list refreshed`, 5000);
+    }
+    refreshStatus();
+  }
+
+  $("connect-arm").addEventListener("click", () => connectArm(true));
+  $("connect-mock").addEventListener("click", () => {
+    run(() => api("/api/arm/connect", { mock: true }), (data) => data.message).then(refreshStatus);
+  });
+  $("connect-raw").addEventListener("click", () => connectArm(false));
+
+  $("ports-mark").addEventListener("click", () => run(
+    () => api("/api/calibrate/ports/mark", {}),
+    (data) => {
+      state.portsMarked = true;
+      state.foundPort = "";
+      state.portSaved = false;
+      const count = data.ports.length;
+      $("port-found").className = "hint";
+      $("port-found").textContent = `Recorded ${count} port${count === 1 ? "" : "s"}. Now unplug only the arm adapter.`;
+      syncPortSteps();
+      return `Recorded ${count} connected port${count === 1 ? "" : "s"}`;
+    },
+  ));
+  $("ports-gone").addEventListener("click", () => run(
+    () => api("/api/calibrate/ports/vanished", {}),
+    (data) => {
+      state.foundPort = data.port;
+      state.portSaved = false;
+      $("port-found").className = "hint good";
+      $("port-found").textContent = `The arm adapter was ${data.port}. Plug it back in, then save.`;
+      syncPortSteps();
+      return `The adapter was ${data.port}`;
+    },
+  ));
+  $("ports-save").addEventListener("click", () => run(
+    () => api("/api/calibrate/ports/save", { port: state.foundPort }),
+    (data) => {
+      state.portSaved = true;
+      $("port-found").className = "hint good";
+      $("port-found").textContent = `Saved ${data.port}. Click Connect arm above when the adapter is plugged in.`;
+      syncPortSteps();
+      return `Saved port ${data.port}`;
+    },
+  ).then(refreshStatus));
+
+  $("camera-profile").addEventListener("change", async (event) => {
+    const name = event.target.value;
+    const profile = state.profiles.find((item) => item.name === name);
+    applyProfileFields(profile);
+    await run(() => api("/api/cameras/select", { profile: name }), (data) => data.message);
+    refreshStatus();
+  });
+  $("camera-refresh").addEventListener("click", () => run(loadCameras, (data) => `${(data.profiles || []).length} camera profiles`));
+  $("camera-connect").addEventListener("click", () => {
+    const body = { profile: $("camera-profile").value };
+    const device = $("camera-device").value.trim();
+    const url = $("camera-url").value.trim();
+    const width = $("camera-width").value.trim();
+    const height = $("camera-height").value.trim();
+    const fps = $("camera-fps").value.trim();
+    if (device !== "") body.device = Number(device);
+    if (url !== "") body.url = url;
+    if (width !== "") body.width = Number(width);
+    if (height !== "") body.height = Number(height);
+    if (fps !== "") body.fps = Number(fps);
+    run(() => api("/api/camera/connect", body), (data) => data.message).then(refreshStatus);
+  });
+  $("camera-disconnect").addEventListener("click", () => {
+    run(() => api("/api/camera/disconnect", {}), (data) => data.message).then(refreshStatus);
+  });
+  $("probe").addEventListener("click", () => run(
+    () => api("/api/probe", {}),
+    (data) => {
+      const stream = data.ports && data.ports["8090"];
+      $("probe-result").textContent = stream ? "stream open on 8090" : "no stream on 8090";
+      return `${data.host}: ${stream ? "stream" : "no stream"}`;
+    },
+  ).then(refreshStatus));
+
+  const MOTOR_ACTIONS = ["midpoint", "range-start", "range-stop"];
+
+  function renderMotorGuard() {
+    const armed = state.motorArmed;
+    MOTOR_ACTIONS.forEach((id) => { $(id).disabled = !armed; });
+    const start = $("motor-start");
+    start.textContent = armed ? "Cancel motor calibration" : "Start motor calibration";
+    start.classList.toggle("good", armed);
+  }
+
+  function disarmMotor() {
+    state.motorArmed = false;
+    renderMotorGuard();
+  }
+
+  $("motor-start").addEventListener("click", () => {
+    state.motorArmed = !state.motorArmed;
+    renderMotorGuard();
+    note(state.motorArmed
+      ? "Motor calibration armed. Support the arm."
+      : "Motor calibration cancelled");
+  });
+  renderMotorGuard();
+
+  $("midpoint").addEventListener("click", () => run(
+    () => api("/api/calibrate/motors/midpoint", {}),
+    () => "Midpoint written",
+  ).then(refreshStatus));
+  $("range-start").addEventListener("click", () => run(
+    () => api("/api/calibrate/motors/range/start", {}),
+    (data) => data.message,
+  ));
+  $("range-stop").addEventListener("click", async () => {
+    const data = await run(
+      () => api("/api/calibrate/motors/range/stop", {}),
+      () => "Motor ranges saved",
+    );
+    if (data) disarmMotor();
+    refreshStatus();
+  });
+
+  /* ---------------- calibration ---------------- */
+
+  $("tag").addEventListener("click", () => run(
+    () => api("/api/calibrate/hand-eye/sample", {}),
+    (data) => `${data.views} hand-eye poses captured`,
+  ).then(refreshStatus));
+  $("hand-reset").addEventListener("click", () => run(
+    () => api("/api/calibrate/hand-eye/reset", {}),
+    () => "Hand-eye poses cleared",
+  ).then(refreshStatus));
+  $("solve-tag").addEventListener("click", async () => {
+    const data = await run(() => api("/api/calibrate/hand-eye/solve", {}));
+    if (data) {
+      note(`Saved hand-eye. Residual ${mm(data.max_residual_m)} mm, ${Number(data.max_residual_deg).toFixed(1)} deg.`);
+    }
+    refreshStatus();
+  });
+
+  $("auto-tag").addEventListener("click", async () => {
+    const data = await run(() => api("/api/calibrate/hand-eye/auto", {}));
+    if (data && data.running) note("Auto calibration started. Keep the area clear.", 5000);
+    refreshStatus();
+  });
+  $("auto-stop").addEventListener("click", async () => {
+    const data = await run(() => api("/api/calibrate/hand-eye/auto/cancel", {}));
+    if (data) note(data.cancelled ? "Auto calibration stopped" : "Stopping auto calibration");
+    refreshStatus();
+  });
+
+  $("board").addEventListener("click", () => run(
+    () => api("/api/calibrate/intrinsics/capture", {}),
+    (data) => `${data.views} chessboard views`,
+  ).then(refreshStatus));
+  $("board-reset").addEventListener("click", () => run(
+    () => api("/api/calibrate/intrinsics/reset", {}),
+    () => "Chessboard captures cleared",
+  ).then(refreshStatus));
+  $("solve-board").addEventListener("click", async () => {
+    const data = await run(() => api("/api/calibrate/intrinsics/solve", {}));
+    if (data) {
+      $("intrinsics-result").textContent = `fx ${Number(data.fx).toFixed(1)} · fy ${Number(data.fy).toFixed(1)}`
+        + ` · cx ${Number(data.cx).toFixed(1)} · cy ${Number(data.cy).toFixed(1)}`
+        + ` · RMS ${Number(data.rms).toFixed(3)} px. Written to the active profile.`;
+      note(`Saved intrinsics, RMS ${Number(data.rms).toFixed(3)} px`);
+    }
+    refreshStatus();
+  });
+
+  function renderTagPose(values) {
+    const ids = ["tag-x", "tag-y", "tag-z", "tag-roll", "tag-pitch", "tag-yaw"];
+    ids.forEach((id, index) => {
+      const value = values ? Number(values[index]) : NaN;
+      $(id).textContent = Number.isFinite(value) ? value.toFixed(1) : "—";
+    });
+  }
+
+  async function refreshPreview() {
+    if (state.page !== "handeye" || state.previewBusy) return;
+    if (!state.status || !state.status.camera || !state.status.camera.connected) {
+      $("hand-preview").textContent = "Camera is off.";
+      $("hand-preview").className = "hint";
+      renderTagPose(null);
+      return;
+    }
+    state.previewBusy = true;
+    try {
+      const data = await api("/api/calibrate/hand-eye/preview");
+      if (data.visible) {
+        $("hand-preview").textContent = `Tag ${data.tag_id} visible · ${mm(data.distance_m)} mm from the camera`;
+        $("hand-preview").className = "hint good";
+        renderTagPose([
+          ...data.translation.map((value) => value * 1000),
+          ...(data.rpy || []),
+        ]);
+      } else {
+        $("hand-preview").textContent = `${data.reason} · looking for tag ${data.tag_id}`;
+        $("hand-preview").className = "hint warn";
+        renderTagPose(null);
+      }
+    } catch (error) {
+      $("hand-preview").textContent = error.message || String(error);
+      $("hand-preview").className = "hint bad";
+      renderTagPose(null);
+    } finally {
+      state.previewBusy = false;
+    }
+  }
+
+  async function refreshBoardPreview() {
+    if (state.page !== "intrinsics" || state.previewBusy) return;
+    if (!state.status || !state.status.camera || !state.status.camera.connected) {
+      $("board").classList.remove("good");
+      return;
+    }
+    state.previewBusy = true;
+    try {
+      const data = await api("/api/calibrate/intrinsics/preview");
+      $("board").classList.toggle("good", Boolean(data.found));
+    } catch (error) {
+      $("board").classList.remove("good");
+    } finally {
+      state.previewBusy = false;
+    }
+  }
+
+  /* ---------------- teleop ---------------- */
+
+  function sendSocket(payload) {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify(payload));
+      return true;
+    }
+    return false;
+  }
+
+  function sendTeleop(type, token) {
+    if (type === "press" && autoRunning()) return;
+    if (sendSocket({ type, token })) return;
+    api("/api/teleop", { action: type, token }).catch((error) => note(error.message || String(error)));
+  }
+
+  function tap(token) {
+    if (autoRunning()) {
+      note("Auto calibration is running");
+      return;
+    }
+    run(() => api("/api/teleop", { action: "tap", token }), (data) => data.message || "Moved");
+  }
+
+  const keyFlashTimers = new Map();
+  const TAP_TOKENS = new Set(["h", "r", "p", "space", "+", "-", "="]);
+
+  function keyButton(token) {
+    const wanted = token === "=" ? "+" : token;
+    return document.querySelector(`.key[data-token="${wanted}"]`);
+  }
+
+  function highlightKey(token, on) {
+    const button = keyButton(token);
+    if (!button) return;
+    const timer = keyFlashTimers.get(button);
+    if (timer) clearTimeout(timer);
+    keyFlashTimers.delete(button);
+    button.classList.toggle("active", on);
+  }
+
+  function flashKey(button) {
+    if (!button) return;
+    const timer = keyFlashTimers.get(button);
+    if (timer) clearTimeout(timer);
+    button.classList.add("active");
+    keyFlashTimers.set(button, setTimeout(() => {
+      button.classList.remove("active");
+      keyFlashTimers.delete(button);
+    }, 130));
+  }
+
+  document.querySelectorAll("[data-hold]").forEach((button) => {
+    const token = button.dataset.token;
+    let held = false;
+    const start = (event) => {
+      if (event.button !== undefined && event.button !== 0) return;
+      event.preventDefault();
+      if (held) return;
+      held = true;
+      button.classList.add("active");
+      sendTeleop("press", token);
+    };
+    const stop = () => {
+      if (!held) return;
+      held = false;
+      button.classList.remove("active");
+      sendTeleop("release", token);
+    };
+    button.addEventListener("pointerdown", start);
+    button.addEventListener("pointerup", stop);
+    button.addEventListener("pointercancel", stop);
+    button.addEventListener("pointerleave", stop);
+  });
+
+  document.querySelectorAll("[data-tap]").forEach((button) => {
+    button.addEventListener("click", () => {
+      flashKey(button);
+      tap(button.dataset.token);
+    });
+  });
+
+  // Opening the Teleop tab turns the keys on and leaving it turns them off. The
+  // top bar can turn them on from any page, and they then stay on across tabs.
+  const heldKeys = new Set();
+
+  function teleopKeysOn() {
+    return state.keysOn;
+  }
+
+  function releaseHeldKeys() {
+    heldKeys.forEach((token) => {
+      sendTeleop("release", token);
+      highlightKey(token, false);
+    });
+    heldKeys.clear();
+  }
+
+  function renderKeysToggle() {
+    const button = $("keys-toggle");
+    button.setAttribute("aria-pressed", String(state.keysOn));
+    button.classList.toggle("good", state.keysOn);
+    button.textContent = state.keysOn ? "Key teleop: on" : "Key teleop: off";
+  }
+
+  $("keys-toggle").addEventListener("click", () => {
+    state.keysOn = !state.keysOn;
+    if (!state.keysOn) releaseHeldKeys();
+    renderKeysToggle();
+    note(state.keysOn
+      ? "Teleop keys on: they work on every page"
+      : "Teleop keys off: they work only on the Teleop tab");
+  });
+  renderKeysToggle();
+
+  function keyToken(event) {
+    const arrows = { ArrowLeft: "a", ArrowRight: "d", ArrowUp: "w", ArrowDown: "s" };
+    if (arrows[event.key]) return arrows[event.key];
+    if (event.key === " " || event.key === "Spacebar") return "space";
+    if (event.key.length === 1) return event.key.toLowerCase();
+    return "";
+  }
+
+  function typing(target) {
+    return Boolean(target) && (
+      target.tagName === "INPUT" || target.tagName === "SELECT"
+      || target.tagName === "TEXTAREA" || target.isContentEditable
+    );
+  }
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      estop();
+      return;
+    }
+    if (!teleopKeysOn() || typing(event.target) || event.repeat) return;
+    const token = keyToken(event);
+    if (!KEYS.has(token)) return;
+    event.preventDefault();
+    if (TAP_TOKENS.has(token)) {
+      flashKey(keyButton(token));
+      tap(token);
+      return;
+    }
+    heldKeys.add(token);
+    highlightKey(token, true);
+    sendTeleop("press", token);
+  });
+
+  document.addEventListener("keyup", (event) => {
+    const token = keyToken(event);
+    if (!heldKeys.has(token)) return;
+    heldKeys.delete(token);
+    event.preventDefault();
+    if (!TAP_TOKENS.has(token)) highlightKey(token, false);
+    sendTeleop("release", token);
+  });
+
+  function applyTeleopConfig() {
+    const step = Number($("step-range").value);
+    const speed = Number($("speed-range").value);
+    $("step-value").textContent = `${step} mm`;
+    $("speed-value").textContent = `${speed} °/s`;
+    if (!state.status || !state.status.arm || !state.status.arm.connected) return;
+    clearTimeout(state.configTimer);
+    state.configTimer = setTimeout(() => {
+      api("/api/teleop/config", { step_m: step / 1000, speed_deg_s: speed })
+        .then((data) => {
+          note(`Step ${Math.round(data.step_m * 1000)} mm, joint speed ${Math.round(data.speed_deg_s)} °/s`);
+        })
+        .catch((error) => note(error.message || String(error)));
+    }, 140);
+  }
+
+  $("step-range").addEventListener("input", applyTeleopConfig);
+  $("speed-range").addEventListener("input", applyTeleopConfig);
+
+  /* ---------------- safety ---------------- */
+
+  async function estop() {
+    note("E-stop sent: torque off.");
+    heldKeys.forEach((token) => highlightKey(token, false));
+    heldKeys.clear();
+    const pending = [];
+    if (socket && socket.readyState === WebSocket.OPEN) pending.push(sendSocket({ type: "estop" }));
+    pending.push(api("/api/estop", {}).catch((error) => note(`E-stop: ${error.message || error}`)));
+    await Promise.all(pending);
+    refreshStatus();
+  }
+
+  $("estop").addEventListener("click", estop);
+  $("hold").addEventListener("click", () => {
+    run(() => api("/api/hold", {}), (data) => data.message).then(refreshStatus);
+  });
+
+  /* ---------------- live image and tasks ---------------- */
+
+  live.addEventListener("click", async (event) => {
+    const rect = live.getBoundingClientRect();
+    if (!live.naturalWidth || !rect.width || !rect.height) {
+      note("Camera image is not ready");
+      return;
+    }
+    const x = Math.round((event.clientX - rect.left) * live.naturalWidth / rect.width);
+    const y = Math.round((event.clientY - rect.top) * live.naturalHeight / rect.height);
+    if (state.page === "go") {
+      const data = await run(() => api("/api/click", { x, y }));
+      if (data) {
+        $("go-result").textContent = data.status === "arrived"
+          ? `Arrived at ${targetText(data.target)} from pixel ${x}, ${y}.`
+          : `A newer click replaced this one (pixel ${x}, ${y}).`;
+        note(`Click ${x}, ${y}: ${data.status}`);
+      }
+    } else if (state.page === "pick") {
+      const data = await runPick(
+        "pick-busy", "pick-result", `Picking at pixel ${x}, ${y}…`,
+        () => api("/api/click-pick", { x, y }),
+        (body) => `${body.status} at ${targetText(body.target)} (pixel ${x}, ${y}).`,
+      );
+      if (data) note(`Pick ${x}, ${y}: ${data.status}`);
+    } else if (state.page === "detect") {
+      const data = await runPick(
+        "detect-busy", "detect-result", `Looking for a box under pixel ${x}, ${y}…`,
+        () => api("/api/detect-pick", { x, y }),
+        (body) => `${body.status} at ${targetText(body.target)} — box ${body.box + 1} ${body.label}, centre ${body.center[0]}, ${body.center[1]}.`,
+      );
+      if (data) note(`Detect pick ${data.label}: ${data.status}`);
+    }
+  });
+
+  async function runPick(busyId, resultId, pending, task, format) {
+    if (state.pickBusy) return null;
+    state.pickBusy = true;
+    $(busyId).textContent = "Picking…";
+    $(resultId).textContent = pending;
+    try {
+      const data = await task();
+      $(resultId).textContent = format(data);
+      return data;
+    } catch (error) {
+      const text = error.message || String(error);
+      $(resultId).textContent = text;
+      note(text);
+      return null;
+    } finally {
+      state.pickBusy = false;
+      $(busyId).textContent = "";
+    }
+  }
+
+  async function refreshDetections() {
+    if (state.page !== "detect") return;
+    try {
+      const data = await api("/api/detections");
+      if (!data.enabled) {
+        $("det-status").textContent = "YOLO panel is disabled.";
+        renderBoxes([]);
+        return;
+      }
+      const boxes = data.boxes || [];
+      const age = data.age_s == null ? "no boxes yet" : `${Number(data.age_s).toFixed(1)} s ago`;
+      const resolution = data.resolution ? ` · ${data.resolution[0]}×${data.resolution[1]}` : "";
+      const source = data.source ? ` from ${data.source}` : "";
+      const status = data.error || `${boxes.length} boxes${source} · ${age}${resolution}`;
+      $("det-status").textContent = status;
+      renderBoxes(boxes, data.resolution);
+      drawDetectBoxes();
+    } catch (error) {
+      $("det-status").textContent = error.message || String(error);
+    }
+  }
+
+  function renderBoxes(boxes, resolution = null) {
+    const sig = JSON.stringify([boxes, resolution]);
+    if (sig === state.boxSig) return;
+    state.boxSig = sig;
+    state.boxes = boxes;
+    state.resolution = resolution;
+    const body = $("boxes");
+    body.replaceChildren();
+    if (!boxes.length) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 4;
+      td.className = "hint";
+      td.textContent = "Waiting for boxes from the camera.";
+      tr.append(td);
+      body.append(tr);
+      return;
+    }
+    boxes.forEach((box, index) => {
+      const tr = document.createElement("tr");
+      const label = document.createElement("td");
+      label.textContent = box.label;
+      const score = document.createElement("td");
+      score.textContent = Number(box.score).toFixed(0);
+      const centre = document.createElement("td");
+      const [cx, cy] = frameCentre(box, resolution);
+      centre.textContent = `${cx}, ${cy}`;
+      const action = document.createElement("td");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "btn small";
+      button.textContent = "Pick";
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        pickBox(index);
+      });
+      action.append(button);
+      tr.append(label, score, centre, action);
+      tr.addEventListener("click", () => {
+        body.querySelectorAll("tr").forEach((row) => row.classList.remove("selected"));
+        tr.classList.add("selected");
+      });
+      body.append(tr);
+    });
+  }
+
+  function frameCentre(box, resolution) {
+    // Same truncation as box_centre() in so101_utils.click_app.
+    const camera = (state.status && state.status.camera) || {};
+    const frameW = live.naturalWidth || Number(camera.width) || 0;
+    const frameH = live.naturalHeight || Number(camera.height) || 0;
+    const resW = (resolution && resolution[0]) || frameW;
+    const resH = (resolution && resolution[1]) || frameH;
+    const cx = (Number(box.x1) + Number(box.x2)) / 2;
+    const cy = (Number(box.y1) + Number(box.y2)) / 2;
+    if (!frameW || !frameH || !resW || !resH) return [Math.trunc(cx), Math.trunc(cy)];
+    return [Math.trunc(cx * frameW / resW), Math.trunc(cy * frameH / resH)];
+  }
+
+  function drawDetectBoxes() {
+    const canvas = $("detect-overlay");
+    if (!canvas || state.page !== "detect") return;
+    const wrap = canvas.parentElement;
+    const rect = live.getBoundingClientRect();
+    const width = Math.round(rect.width);
+    const height = Math.round(rect.height);
+    if (!width || !height) {
+      canvas.width = 0;
+      canvas.height = 0;
+      return;
+    }
+    const ratio = window.devicePixelRatio || 1;
+    canvas.width = Math.round(width * ratio);
+    canvas.height = Math.round(height * ratio);
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+    if (!state.boxes.length) return;
+    const resolution = state.resolution || [live.naturalWidth, live.naturalHeight];
+    if (!resolution[0] || !resolution[1]) return;
+    const wrapRect = wrap.getBoundingClientRect();
+    const left = rect.left - wrapRect.left;
+    const top = rect.top - wrapRect.top;
+    ctx.strokeStyle = "#b8f36b";
+    ctx.lineWidth = 2;
+    ctx.font = "12px ui-monospace, monospace";
+    ctx.fillStyle = "#b8f36b";
+    state.boxes.forEach((box, index) => {
+      const x = left + box.x1 / resolution[0] * width;
+      const y = top + box.y1 / resolution[1] * height;
+      const w = (box.x2 - box.x1) / resolution[0] * width;
+      const h = (box.y2 - box.y1) / resolution[1] * height;
+      ctx.strokeRect(x, y, w, h);
+      ctx.fillText(`${index + 1} ${box.label}`, x + 3, Math.max(y - 4, top + 12));
+    });
+  }
+
+  window.addEventListener("resize", drawDetectBoxes);
+
+  async function pickBox(index) {
+    const data = await runPick(
+      "detect-busy", "detect-result", `Picking box ${index + 1}…`,
+      () => api("/api/pick", { index }),
+      (body) => `${body.status} at ${targetText(body.target)} from box ${index + 1}.`,
+    );
+    if (data) note(`Box ${index + 1}: ${data.status}`);
+  }
+
+  /* ---------------- Rerun ---------------- */
+
+  function viewerFrame(url) {
+    const page = new URL(url, window.location.href);
+    const target = page.searchParams.get("url");
+    if (target) page.searchParams.set("url", target.replace("://localhost", "://127.0.0.1"));
+    page.searchParams.set("persist", "false");
+    page.searchParams.set("hide_welcome_screen", "");
+    return page.toString();
+  }
+
+  let viewerTimer = 0;
+
+  async function refreshViewer(force = false) {
+    clearTimeout(viewerTimer);
+    try {
+      const data = await api("/api/viewer");
+      $("rerun-note").textContent = data.detail || "Rerun status unknown.";
+      $("rerun-dot").classList.toggle("on", Boolean(data.enabled));
+      const frame = $("rerun");
+      if (data.enabled && data.url) {
+        const target = viewerFrame(data.url);
+        const separator = target.includes("?") ? "&" : "?";
+        if (target !== state.viewerUrl || force) {
+          state.viewerUrl = target;
+          frame.src = force ? `${target}${separator}reload=${Date.now()}` : target;
+        }
+        frame.hidden = false;
+        $("rerun-empty").hidden = true;
+        $("rerun-start").disabled = true;
+        $("rerun-start").textContent = "Rerun running";
+      } else {
+        frame.hidden = true;
+        $("rerun-empty").hidden = false;
+        $("rerun-start").disabled = data.allowed === false || data.starting === true;
+        $("rerun-start").textContent = data.allowed === false
+          ? "Rerun disabled"
+          : (data.starting ? "Starting Rerun" : "Start Rerun");
+        // The viewer comes up off the server thread; keep checking until it
+        // reports a URL or a real failure.
+        if (data.starting) viewerTimer = setTimeout(() => refreshViewer(), 1500);
+      }
+    } catch (error) {
+      $("rerun-note").textContent = error.message || String(error);
+      $("rerun-dot").classList.remove("on");
+    }
+  }
+
+  $("rerun-start").addEventListener("click", async () => {
+    const data = await run(() => api("/api/viewer/start", {}));
+    if (data) $("rerun-note").textContent = data.detail;
+    await refreshViewer(true);
+  });
+  $("rerun-reload").addEventListener("click", () => refreshViewer(true));
+
+  /* ---------------- websocket ---------------- */
+
+  function connectSocket() {
+    const scheme = location.protocol === "https:" ? "wss" : "ws";
+    let opened = null;
+    try {
+      opened = new WebSocket(`${scheme}://${location.host}/api/ws`);
+    } catch (error) {
+      setTimeout(connectSocket, 2000);
+      return;
+    }
+    socket = opened;
+    opened.addEventListener("open", () => {
+      if (socket === opened) $("link").textContent = "local · ws";
+    });
+    opened.addEventListener("message", (event) => {
+      let data;
+      try { data = JSON.parse(event.data); } catch { return; }
+      if (data.type === "error") {
+        note(data.detail || "Teleop error");
+      } else if (data.type === "ok" && data.message && data.message !== state.lastServerMessage) {
+        state.lastServerMessage = data.message;
+        if (performance.now() > state.localUntil) $("message").textContent = data.message;
+      }
+    });
+    opened.addEventListener("close", () => {
+      if (socket === opened) {
+        socket = null;
+        $("link").textContent = "local · http";
+        setTimeout(connectSocket, 1500);
+      }
+    });
+    opened.addEventListener("error", () => {});
+  }
+
+  /* ---------------- boot ---------------- */
+
+  // The MJPEG response never ends, so attach it after `load` has fired.
+  const bootStream = () => {
+    streamReady = true;
+    if (cameraOn()) startStream();
+  };
+  if (document.readyState === "complete") bootStream();
+  else window.addEventListener("load", bootStream, { once: true });
+
+  show("hardware");
+  syncPortSteps();
+  connectSocket();
+  refreshStatus();
+  loadPorts().catch(() => {
+    const select = $("ports");
+    select.replaceChildren();
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "Port listing unavailable";
+    select.append(option);
+  });
+  loadCameras().catch(() => {
+    $("camera-detail").textContent = "Camera profiles are unavailable.";
+  });
+  refreshViewer();
+  refreshDetections();
+
+  setInterval(refreshStatus, 800);
+  setInterval(refreshDetections, 600);
+  setInterval(refreshViewer, 3000);
+  setInterval(refreshPreview, 1500);
+  setInterval(refreshBoardPreview, 1500);
+})();
+</script>
+</body>
+</html>
