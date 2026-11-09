@@ -8,6 +8,7 @@ import json
 import socket
 import sys
 import time
+import uuid
 
 import yaml
 from scipy.spatial.transform import Rotation
@@ -134,6 +135,7 @@ class Agent:
         self.viewer_allowed = True
         self.viewer_error = None
         self.viewer_mode = "arm"
+        self._viewer_generation = ""
         self._viewer_started = False
         self._viewer_starting = False
         self._viewer_lock = Lock()
@@ -1010,6 +1012,7 @@ class Agent:
             "starting": starting,
             "url": url,
             "mode": self.viewer_mode,
+            "generation": self._viewer_generation,
             "detail": detail,
         }
 
@@ -1055,6 +1058,7 @@ class Agent:
                 return
             self.viewer = viewer
             self.viewer_error = None
+            self._viewer_generation = uuid.uuid4().hex
             self._viewer_started = True
             self._attach_viewer()
         except Exception as exc:

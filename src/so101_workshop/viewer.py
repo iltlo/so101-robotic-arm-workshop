@@ -9,12 +9,16 @@ owns them, the next free pair is used so two stations can run side by side.
 
 from urllib.parse import quote
 from pathlib import Path
+import atexit
+import hashlib
+import json
 import os
 import shutil
 import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 
 from so101_utils.views import Twin
@@ -51,6 +55,7 @@ def _stop_process(process: subprocess.Popen) -> None:
     """Stop the rerun wrapper and the real viewer child it may have spawned."""
     if process.poll() is not None:
         _PROCESSES.discard(process)
+        _clear_viewer_record(getattr(process, "pid", None))
         return
     pid = getattr(process, "pid", None)
     if os.name == "nt":
@@ -80,12 +85,170 @@ def _stop_process(process: subprocess.Popen) -> None:
         else:
             process.kill()
     _PROCESSES.discard(process)
+    _clear_viewer_record(pid)
 
 
 def stop_all() -> None:
     """Stop every viewer this process spawned, including a stalled start."""
     for process in list(_PROCESSES):
         _stop_process(process)
+
+
+def _viewer_state_path() -> Path:
+    """One record per station, so a crashed run cannot leave a hidden viewer."""
+    from so101_utils.config import ROOT
+
+    digest = hashlib.sha1(str(Path(ROOT).resolve()).encode()).hexdigest()[:12]
+    return Path(tempfile.gettempdir()) / "so101-workshop" / f"viewer-{digest}.json"
+
+
+def _record_viewer(process: subprocess.Popen, grpc_port: int, web_port: int) -> None:
+    pid = getattr(process, "pid", None)
+    if pid is None:
+        return
+    path = _viewer_state_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "pid": pid, "grpc_port": grpc_port, "web_port": web_port,
+        }))
+    except OSError:
+        pass
+
+
+def _clear_viewer_record(pid) -> None:
+    if pid is None:
+        return
+    path = _viewer_state_path()
+    try:
+        state = json.loads(path.read_text())
+    except (OSError, ValueError):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return
+    if state.get("pid") == pid:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _is_rerun_process(pid: int) -> bool:
+    try:
+        if os.name == "nt":
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                capture_output=True, text=True, errors="replace", timeout=5,
+            )
+            return result.returncode == 0 and "rerun" in result.stdout.lower()
+        if sys.platform == "darwin":
+            # `comm` is only the interpreter, so read the full command line.
+            result = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "args="],
+                capture_output=True, text=True, errors="replace", timeout=5,
+            )
+            return "rerun" in result.stdout.lower()
+        return b"rerun" in Path(f"/proc/{pid}/cmdline").read_bytes().lower()
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _terminate_pid(pid: int) -> None:
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/T", "/F", "/PID", str(pid)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+        )
+        return
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except OSError:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            return
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return
+        time.sleep(0.05)
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except OSError:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+
+def _wait_for_port(port: int, timeout: float = 3.0) -> None:
+    if port <= 0:
+        return
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _port_open(port):
+            return
+        time.sleep(0.05)
+
+
+def stop_stale_viewer() -> None:
+    """Stop a viewer recorded by an earlier run of this station.
+
+    Windows does not take child processes down with the workshop, so a crash
+    or a closed console can leave one running on the preferred ports.
+    """
+    path = _viewer_state_path()
+    try:
+        state = json.loads(path.read_text())
+        pid = int(state["pid"])
+        grpc_port = int(state.get("grpc_port") or 0)
+    except (OSError, ValueError, KeyError, TypeError):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return
+    if _is_rerun_process(pid):
+        _terminate_pid(pid)
+        _wait_for_port(grpc_port)
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+_HANDLERS = []
+_HANDLERS_INSTALLED = False
+
+
+def install_cleanup_handlers() -> None:
+    """Take viewer children down when the server exits or its console closes."""
+    global _HANDLERS_INSTALLED
+    if _HANDLERS_INSTALLED:
+        return
+    _HANDLERS_INSTALLED = True
+    atexit.register(stop_all)
+    if os.name != "nt":
+        return
+    # Detaching the viewer from the console keeps Ctrl+C from killing it while
+    # the SDK still has data to flush, so close events need their own cleanup.
+    import ctypes
+    from ctypes import wintypes
+
+    handler_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
+
+    def handler(event):
+        if event in (2, 5, 6):  # close, logoff, shutdown
+            stop_all()
+        return False
+
+    callback = handler_type(handler)
+    _HANDLERS.append(callback)
+    ctypes.windll.kernel32.SetConsoleCtrlHandler(callback, True)
 
 
 class WorkshopViewer:
@@ -151,21 +314,30 @@ def _viewer_command(binary: str, grpc_port: int, web_port: int, web_origin: str)
     ]
 
 
+def _spawn_options() -> dict:
+    if os.name == "nt":
+        flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        return {"creationflags": flags}
+    return {"start_new_session": True}
+
+
 def open_viewer(urdf, intrinsics) -> WorkshopViewer:
     """Start a headless Rerun server and log the arm blueprint into it."""
     binary = rerun_binary()
     if binary is None:
         raise RuntimeError("The rerun viewer is not installed. Install the twin extra.")
+    stop_stale_viewer()
     grpc_port, web_port = _pick_ports()
     web_origin = f"http://127.0.0.1:{web_port}"
-    session = {} if os.name == "nt" else {"start_new_session": True}
     process = subprocess.Popen(
         _viewer_command(binary, grpc_port, web_port, web_origin),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        **session,
+        **_spawn_options(),
     )
     _PROCESSES.add(process)
+    _record_viewer(process, grpc_port, web_port)
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
         if process.poll() is not None:

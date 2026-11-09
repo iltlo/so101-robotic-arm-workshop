@@ -899,6 +899,7 @@
     foundPort: "",
     portSaved: false,
     viewerUrl: "",
+    viewerGeneration: "",
     lastServerMessage: "",
     localUntil: 0,
     statusBusy: false,
@@ -2013,12 +2014,15 @@
 
   /* ---------------- Rerun ---------------- */
 
-  function viewerFrame(url) {
+  function viewerFrame(url, generation) {
     const page = new URL(url, window.location.href);
     const target = page.searchParams.get("url");
     if (target) page.searchParams.set("url", target.replace("://localhost", "://127.0.0.1"));
     page.searchParams.set("persist", "false");
     page.searchParams.set("hide_welcome_screen", "");
+    // A restarted server reuses the same ports. Tie the iframe URL to the
+    // viewer instance so the page does not keep showing the previous run.
+    if (generation) page.searchParams.set("reload", generation);
     return page.toString();
   }
 
@@ -2032,11 +2036,13 @@
       $("rerun-dot").classList.toggle("on", Boolean(data.enabled));
       const frame = $("rerun");
       if (data.enabled && data.url) {
-        const target = viewerFrame(data.url);
+        const generation = data.generation || "";
+        const target = viewerFrame(data.url, generation);
         const separator = target.includes("?") ? "&" : "?";
-        if (target !== state.viewerUrl || force) {
+        if (target !== state.viewerUrl || force || generation !== state.viewerGeneration) {
           state.viewerUrl = target;
-          frame.src = force ? `${target}${separator}reload=${Date.now()}` : target;
+          state.viewerGeneration = generation;
+          frame.src = force ? `${target}${separator}refresh=${Date.now()}` : target;
         }
         frame.hidden = false;
         $("rerun-empty").hidden = true;

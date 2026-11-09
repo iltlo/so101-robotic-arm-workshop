@@ -57,6 +57,8 @@ def _run(args) -> None:
     station = prepare_station(args.config_dir)
     set_station(station)
     from so101_workshop.agent import Agent
+    from so101_workshop.viewer import install_cleanup_handlers
+    install_cleanup_handlers()
     agent = Agent()
     if args.mock:
         agent.connect_arm(mock=True)
@@ -67,7 +69,12 @@ def _run(args) -> None:
     launcher = _launcher_pid()
     if launcher is not None:
         Thread(target=_exit_with_launcher, args=(launcher,), daemon=True).start()
-    uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="info")
+    uvicorn.run(
+        app, host="127.0.0.1", port=args.port, log_level="info",
+        # A browser tab keeps a websocket open, which otherwise makes Ctrl+C
+        # hang on "Waiting for connections to close" and strands the viewer.
+        timeout_graceful_shutdown=5,
+    )
 
 
 if __name__ == "__main__":

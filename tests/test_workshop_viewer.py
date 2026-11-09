@@ -168,3 +168,65 @@ def test_a_closed_twin_stops_logging():
     assert twin.rr.disconnected is True
     twin.update({})
     twin.flush()
+
+
+def test_stale_viewer_record_is_killed_and_cleared(monkeypatch, tmp_path):
+    record = tmp_path / "viewer.json"
+    record.write_text('{"pid": 4242, "grpc_port": 9881, "web_port": 9091}')
+    killed, waited = [], []
+    monkeypatch.setattr(viewer, "_viewer_state_path", lambda: record)
+    monkeypatch.setattr(viewer, "_is_rerun_process", lambda pid: pid == 4242)
+    monkeypatch.setattr(viewer, "_terminate_pid", killed.append)
+    monkeypatch.setattr(viewer, "_wait_for_port", waited.append)
+    viewer.stop_stale_viewer()
+    assert killed == [4242]
+    assert waited == [9881]
+    assert not record.exists()
+
+
+def test_stale_viewer_record_is_dropped_when_the_pid_is_not_rerun(monkeypatch, tmp_path):
+    record = tmp_path / "viewer.json"
+    record.write_text('{"pid": 4242, "grpc_port": 9881, "web_port": 9091}')
+    killed = []
+    monkeypatch.setattr(viewer, "_viewer_state_path", lambda: record)
+    monkeypatch.setattr(viewer, "_is_rerun_process", lambda pid: False)
+    monkeypatch.setattr(viewer, "_terminate_pid", killed.append)
+    viewer.stop_stale_viewer()
+    assert killed == []
+    assert not record.exists()
+
+
+def test_the_stale_viewer_check_reads_the_command_line_on_macos(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stdout="/venv/bin/python /venv/bin/rerun --headless")
+
+    monkeypatch.setattr(viewer.sys, "platform", "darwin")
+    monkeypatch.setattr(viewer.subprocess, "run", fake_run)
+    assert viewer._is_rerun_process(4242) is True
+    assert calls[0][-1] == "args="
+
+
+def test_each_viewer_start_gets_a_new_generation(monkeypatch):
+    class Stub:
+        url = "http://127.0.0.1:9091/"
+        twin = SimpleNamespace(alive=True)
+
+        def close(self) -> None:
+            pass
+
+        def running(self) -> bool:
+            return True
+
+    monkeypatch.setattr(Agent, "_ensure_urdf", lambda self: None)
+    monkeypatch.setattr(viewer, "open_viewer", lambda urdf, intrinsics: Stub())
+    agent = Agent()
+    assert agent.viewer_status()["generation"] == ""
+    agent._open_viewer()
+    first = agent.viewer_status()["generation"]
+    agent._open_viewer()
+    second = agent.viewer_status()["generation"]
+    assert first and second and first != second
+
