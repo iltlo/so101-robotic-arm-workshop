@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "so101-workshop"
 version = "0.1.0"
 description = "SO-101 workshop: local arm control and a browser UI"
+authors = [{ name = "iltlo", email = "pypi@ianlo.net" }]
 requires-python = ">=3.12,<3.14"
 dependencies = [
     "numpy>=2,<2.3",
