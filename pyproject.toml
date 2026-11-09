@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "so101-workshop"
 version = "0.1.0"
 description = "SO-101 workshop: local arm control and a browser UI"
+readme = "README.md"
 authors = [{ name = "iltlo", email = "pypi@ianlo.net" }]
 requires-python = ">=3.12,<3.14"
 dependencies = [
@@ -36,6 +37,14 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 so101_workshop = ["static/*", "templates/*"]
+
+# Ship the pinned arm files so an installed run works without GitHub access.
+[tool.setuptools.data-files]
+"share/so101-utils/SO101" = [
+    "assets/SO101/so101_new_calib.urdf",
+    "assets/SO101/LICENSE.upstream",
+]
+"share/so101-utils/SO101/assets" = ["assets/SO101/assets/*.stl"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

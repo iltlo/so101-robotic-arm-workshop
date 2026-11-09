@@ -4,7 +4,7 @@ Local control for an SO-101 follower: a browser UI for connection, calibration, 
 
 ## Run
 
-Install [uv](https://docs.astral.sh/uv/), then start one local process. It prints `http://127.0.0.1:8020` and listens only on this machine. An installed run keeps its config and downloaded URDF meshes in `~/.so101-workshop/`. Override that directory with `--config-dir` or `SO101_WORKSHOP_HOME`.
+Install [uv](https://docs.astral.sh/uv/), then start one local process. It prints `http://127.0.0.1:8020` and listens only on this machine. An installed run keeps its config and a copy of the URDF meshes in `~/.so101-workshop/`; the package ships those files, so no download is needed. Override that directory with `--config-dir` or `SO101_WORKSHOP_HOME`.
 
 macOS and Linux:
 
@@ -94,10 +94,9 @@ From a checkout, the same work is available as scripts. `--mock` draws the arm i
 
 ```sh
 uv sync --locked --all-extras
-uv run python scripts/fetch_so101_assets.py
 ```
 
-The asset script downloads the SO-101 URDF and its meshes once.
+The pinned URDF and meshes are already in `assets/SO101/`, and the package ships them, so there is nothing to fetch. `scripts/fetch_so101_assets.py` only refreshes them when the pinned upstream commit changes.
 
 ```sh
 uv run python scripts/check_port.py

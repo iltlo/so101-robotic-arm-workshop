@@ -5,6 +5,7 @@ import os
 from pathlib import Path, PurePosixPath
 import shutil
 import struct
+import sysconfig
 import tempfile
 from urllib.request import urlopen
 import xml.etree.ElementTree as ET
@@ -41,6 +42,9 @@ OLD_PARTS = {
 OLD_DOWNLOADS = OLD_TOP_LEVEL | {
     f"assets/{name}" for name in OLD_MESHES
 } | {f"assets/{name}.part" for name in OLD_PARTS}
+
+# Wheels install the pinned files here so an installed run never needs GitHub.
+BUNDLED_SHARE = Path("share") / "so101-utils" / "SO101"
 
 
 def _parse_urdf(urdf: bytes) -> ET.Element:
@@ -178,9 +182,35 @@ def assets_ready(dest: Path) -> bool:
     return all((dest / name).is_file() for name in meshes)
 
 
+def bundled_assets() -> Path | None:
+    """The pinned copy installed by the wheel, if this environment has one."""
+    cargo = Path(sysconfig.get_path("data")) / BUNDLED_SHARE
+    return cargo if assets_ready(cargo) else None
+
+
+def _source_files(source: Path) -> dict[str, bytes]:
+    license_path = source / "LICENSE.upstream"
+    if not license_path.is_file():
+        raise ValueError(f"Asset source is missing LICENSE.upstream: {source}")
+    urdf = (source / URDF).read_bytes()
+    files = {URDF: urdf, "LICENSE.upstream": license_path.read_bytes()}
+    for path in _mesh_paths(urdf):
+        data = (source / path).read_bytes()
+        _validate_stl(data, path)
+        files[path] = data
+    return files
+
+
 def download_assets(dest: Path) -> Path:
-    with urlopen(URL, timeout=90) as response:
-        payload = response.read()
+    try:
+        with urlopen(URL, timeout=90) as response:
+            payload = response.read()
+    except OSError as exc:
+        raise RuntimeError(
+            f"Could not download the SO-101 URDF from {URL}: {exc}. "
+            "Installed packages ship these files; otherwise copy a complete "
+            f"assets/SO101 folder into {dest.parent}."
+        ) from exc
     with zipfile.ZipFile(io.BytesIO(payload)) as archive:
         files = _archive_files(archive)
     _install(files, dest)
@@ -189,10 +219,20 @@ def download_assets(dest: Path) -> Path:
 
 
 def ensure_assets(dest: Path | None = None) -> Path:
-    """Download the pinned URDF and meshes when the station does not have them."""
+    """Install the pinned URDF and meshes, preferring copies that ship with us.
+
+    Wheels carry the files under ``share/so101-utils``, and a checkout keeps
+    them in ``assets/SO101``. Both avoid the network; the pinned GitHub archive
+    is only fetched when neither copy is available.
+    """
     target = Path(dest) if dest is not None else DEST
     if assets_ready(target):
         return target / URDF
+    checkout = DEST if assets_ready(DEST) else None
+    for source in (bundled_assets(), checkout):
+        if source is not None and source.resolve() != target.resolve():
+            _install(_source_files(source), target)
+            return target / URDF
     return download_assets(target)
 
 

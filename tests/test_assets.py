@@ -8,6 +8,8 @@ import zipfile
 
 import pytest
 
+import so101_utils.assets as packaged
+
 _PATH = Path(__file__).parents[1] / "scripts" / "fetch_so101_assets.py"
 _SPEC = importlib.util.spec_from_file_location("fetch_so101_assets", _PATH)
 fetch = importlib.util.module_from_spec(_SPEC)
@@ -157,3 +159,38 @@ def test_symlink_cannot_redirect_written_mesh(monkeypatch, tmp_path):
         invoke(monkeypatch, dest, make_archive())
     assert (outside / "wrist_camera_so101_v1.stl").read_bytes() == b"outside unchanged"
     assert (dest / "assets").is_symlink()
+
+
+def ready_directory(root):
+    """A directory assets_ready accepts, without the 16 MB payload."""
+    (root / "assets").mkdir(parents=True)
+    urdf = ("<robot name='so101'>" + "".join(
+        f"<link name='{index}'><visual><geometry><mesh filename='assets/mesh_{index}.stl'/>"
+        "</geometry></visual></link>" for index in range(13)
+    ) + "</robot>").encode()
+    (root / packaged.URDF).write_bytes(urdf)
+    for index in range(13):
+        (root / f"assets/mesh_{index}.stl").write_bytes(b"mesh")
+    return root
+
+
+def test_bundled_assets_locate_the_installed_share_directory(monkeypatch, tmp_path):
+    root = tmp_path / "environment"
+    share = ready_directory(root / "share" / "so101-utils" / "SO101")
+    monkeypatch.setattr(packaged.sysconfig, "get_path", lambda name: str(root))
+    assert packaged.bundled_assets() == share
+    (share / packaged.URDF).unlink()
+    assert packaged.bundled_assets() is None
+
+
+def test_ensure_assets_copies_bundled_files_without_network(monkeypatch, tmp_path):
+    source = Path(__file__).parents[1] / "assets" / "SO101"
+    target = tmp_path / "station" / "assets" / "SO101"
+    monkeypatch.setattr(packaged, "bundled_assets", lambda: source)
+    monkeypatch.setattr(packaged, "DEST", tmp_path / "missing-checkout")
+    monkeypatch.setattr(
+        packaged, "urlopen",
+        lambda *args, **kwargs: pytest.fail("ensure_assets used the network"),
+    )
+    assert packaged.ensure_assets(target) == target / packaged.URDF
+    assert snapshot(target) == snapshot(source)
