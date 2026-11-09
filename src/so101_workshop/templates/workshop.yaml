@@ -13,3 +13,4 @@ detections:
   ws_port: 8765
   mqtt_url: mqtt://192.168.42.1:1883
   mqtt_topic: yolo11n_result
+camera_profile: camera_recamera.yaml

@@ -28,8 +28,8 @@ def resolve_station(explicit: str | None = None) -> Path:
 def seed_station(root: Path) -> None:
     """Copy packaged defaults into a station. Existing files stay.
 
-    Every template is copied, so new camera presets (reCamera, webcam,
-    RealSense, demo) appear on an existing station without overwriting edits.
+    Every template is copied, so new camera presets (reCamera, Logitech,
+    USB webcam) appear on an existing station without overwriting edits.
     """
     config = root / "config"
     config.mkdir(parents=True, exist_ok=True)

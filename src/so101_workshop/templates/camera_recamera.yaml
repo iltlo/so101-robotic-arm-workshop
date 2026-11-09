@@ -1,6 +1,6 @@
-# RGB camera. Chessboard intrinsics are written by calibration/intrinsics.py.
+# RGB camera. Chessboard intrinsics are written by the calibration page.
 # Supervisor websocket is 1280x720. These fx/fy/cx/cy are the 1920x1080
-# calibration scaled by 2/3. Rerun calibration/intrinsics.py to measure them.
+# calibration scaled by 2/3. Rerun calibration to measure this camera.
 backend: recamera
 url: ws://192.168.42.1:8090/ws/boxes
 serial: null
