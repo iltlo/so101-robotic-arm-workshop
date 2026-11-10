@@ -1,5 +1,7 @@
-"""Cartesian keyboard control. Steps are metres. Roll and pitch step about the
-gripper's own axes; every goal is in the base frame.
+"""Cartesian keyboard control. Steps are metres. Roll spins the wrist joint, so
+the gripper turns even when a pose solve cannot hold the tool point. Pitch
+turns about the arm's flexion axis: pitch + nods the fingers down and keeps
+going past straight down. Every goal is in the base frame.
 
 The browser and the pynput script both feed tokens into this class. pynput is
 imported only when a pynput key object arrives, so the workshop server does not
@@ -12,7 +14,7 @@ import time
 
 from so101_control.arm import SO101
 from so101_control.kinematics import IKError
-from so101_utils.model import rotate_gripper
+from so101_utils.model import nod_gripper, pitch_axis, tool_rpy
 
 _MOVES = {"w", "a", "s", "d", "q", "e", "z", "c", "f", "v"}
 # Same as the arm default.
@@ -40,8 +42,9 @@ class Teleop:
         self.closed = False
         self.running = True
         self._cancel = cancel
-        self._command = None  # xyz metres; roll, pitch, yaw only while those keys are used
+        self._command = None  # xyz metres the next step starts from
         self._turn_point = None  # xyz a run of roll and pitch keys pivots about
+        self._turn_rotation = None  # 3x3 gripper rotation the turn keys step from
         self._notice = None
         self._lock = Lock()
         self._held: set[str] = set()
@@ -102,6 +105,7 @@ class Teleop:
             self._queue.clear()
             self._command = None
             self._turn_point = None
+            self._turn_rotation = None
 
     def on_press(self, key):
         # Listener thread: record the key and return. A motor call here blocks
@@ -174,6 +178,7 @@ class Teleop:
         if token == "h":
             self._command = None
             self._turn_point = None
+            self._turn_rotation = None
             try:
                 arrived = self.arm.home(wait=False, cancel=self._halted)
             except (ValueError, RuntimeError) as exc:
@@ -186,6 +191,7 @@ class Teleop:
         if token == "r":
             self._command = None
             self._turn_point = None
+            self._turn_rotation = None
             try:
                 arrived = self.arm.rest(wait=False, cancel=self._halted)
             except (ValueError, RuntimeError) as exc:
@@ -221,14 +227,66 @@ class Teleop:
         return True
 
     def _nudge(self, dx=0.0, dy=0.0, dz=0.0, dr=0.0, dp=0.0) -> bool:
+        # Roll is the wrist joint. A pose solve drops the press whenever the
+        # arm cannot hold the tool point through that twist.
+        if dx == dy == dz == dp == 0.0:
+            return self._spin_wrist(dr) if dr else True
+        turned_ok = self._nudge_pose(dx, dy, dz, dp)
+        if dr and turned_ok:
+            return self._spin_wrist(dr)
+        return turned_ok
+
+    def _spin_wrist(self, dr: float) -> bool:
+        try:
+            kwargs = {}
+            if self._cancel is not None:
+                kwargs["cancel"] = self._halted
+            arrived = self.arm.spin_wrist(dr, **kwargs)
+        except (ValueError, RuntimeError) as exc:
+            self._say(str(exc))
+            time.sleep(ERROR_S)
+            return True
+        if not arrived:
+            self._command = None
+            self._turn_point = None
+            self._turn_rotation = None
+            return True
+        solved = self.arm.target_pose()
+        rotation = self.arm.target_rotation()
+        if solved is None or rotation is None:
+            self._command = None
+            self._turn_point = None
+            self._turn_rotation = None
+            return True
+        self._command = (solved.x, solved.y, solved.z)
+        self._turn_point = None
+        self._turn_rotation = rotation
+        self._notice = None
+        roll, pitch, yaw = tool_rpy(rotation, self.arm.nod_axis())
+        print(f"Goal x={solved.x:.4f} m, y={solved.y:.4f} m, z={solved.z:.4f} m, "
+              f"roll={roll:.1f} deg, pitch={pitch:.1f} deg, yaw={yaw:.1f} deg")
+        return True
+
+    def _nudge_pose(self, dx=0.0, dy=0.0, dz=0.0, dp=0.0) -> bool:
+        turning = dp != 0.0
+        moving = dx != 0.0 or dy != 0.0 or dz != 0.0
+        rotation = self._turn_rotation
+        joints = None
         if self._command is None:
-            measured = self.arm.pose_at(self.arm.get_joints())
-            base = (measured.x, measured.y, measured.z,
-                    measured.roll, measured.pitch, measured.yaw)
+            joints = self.arm.get_joints()
+            measured = self.arm.pose_at(joints)
+            base = (measured.x, measured.y, measured.z)
+            if turning:
+                # The matrix, not the angles: at pitch ±90 several roll/yaw
+                # pairs describe the same tool, so a pitch key needs the frame.
+                rotation = self.arm.gripper_frame_pose(joints)[:3, :3]
         else:
             base = self._command
-        turning = dr != 0.0 or dp != 0.0
-        moving = dx != 0.0 or dy != 0.0 or dz != 0.0
+            if turning and rotation is None:
+                rotation = self.arm.target_rotation()
+        # The flexion axis moves with the arm, so ask for it at the seed pose.
+        # Roll does not need it; a pitch key does.
+        axis = self.arm.nod_axis(joints) if dp != 0.0 else None
         # A run of roll and pitch keys pivots about the point the run started at.
         # Re-basing on the solved pose each time would walk the tool point by the
         # solver error, which is what made a pitch press lurch.
@@ -243,13 +301,13 @@ class Teleop:
             if self._cancel is not None:
                 kwargs["cancel"] = self._halted
             if turning:
-                result = self._turn((x, y, z), base[3:6], dr, dp, **kwargs)
+                result = self._turn((x, y, z), rotation, dp, axis, **kwargs)
                 if result is None:
-                    self._say("Turn blocked: the tool point would move")
+                    self._say("Turn blocked: the wrist cannot turn that way here")
                     return True
-                (roll, pitch, yaw), arrived = result
+                turned, arrived = result
             else:
-                roll = pitch = yaw = None
+                turned = None
                 arrived = self.arm.move_to(x, y, z, **kwargs)
         except (ValueError, RuntimeError) as exc:
             self._say(str(exc))
@@ -258,42 +316,57 @@ class Teleop:
         if not arrived:
             self._command = None
             self._turn_point = None
+            self._turn_rotation = None
             return True
         solved = self.arm.target_pose()
         if solved is None:
             self._command = None
             self._turn_point = None
+            self._turn_rotation = None
             return True
         # Step from where the solver put the tool, not from the request. The
         # five-joint arm leaves a little solve error, and walking the request
         # ahead of it turns later nudges into branches and jumps.
-        self._command = (solved.x, solved.y, solved.z,
-                         solved.roll, solved.pitch, solved.yaw)
+        self._command = (solved.x, solved.y, solved.z)
         self._turn_point = (x, y, z) if turning else None
+        self._turn_rotation = self.arm.target_rotation()
         self._notice = None
-        if roll is None:
+        if turned is None:
             print(f"Goal x={x:.4f} m, y={y:.4f} m, z={z:.4f} m")
         else:
+            roll, pitch, yaw = tool_rpy(turned, axis if axis is not None else self.arm.nod_axis())
             print(f"Goal x={x:.4f} m, y={y:.4f} m, z={z:.4f} m, "
                   f"roll={roll:.1f} deg, pitch={pitch:.1f} deg, yaw={yaw:.1f} deg")
         return True
 
-    def _turn(self, point, base_angles, dr, dp, **kwargs):
-        """Turn about the gripper frame while holding the tool point.
+    def _turn(self, point, rotation, dp, axis, **kwargs):
+        """Pitch about the arm's flexion axis, holding the tool point.
 
-        A step can need more wrist travel than the pose allows; halving keeps a
-        blocked turn from snapping to a different arm branch. Returns the angles
-        that moved and whether the move finished, or None when even the smallest
-        step cannot hold the point.
+        Pitch turns about the flexion axis in the base frame, not the gripper's
+        Y: only the flexion axis can carry the tool through a pitch without
+        giving up the point. A step can need more wrist travel than the pose
+        allows; halving keeps a blocked turn from snapping to a different arm
+        branch. Returns the target frame and whether the move finished, or
+        None when even the smallest step cannot hold the point.
         """
         for scale in (1.0, 0.5, 0.25):
-            angles = rotate_gripper(base_angles, roll=dr * scale, pitch=dp * scale)
+            # Positive pitch nods the fingers down and continues past vertical.
+            # The sign is the nod itself, not "whichever way lifts", which
+            # reverses once the fingers pass straight down.
+            turned = nod_gripper(rotation, pitch_axis(rotation, axis), dp * scale)
             try:
-                arrived = self.arm.move_to(*point, *angles, hold_point=True, **kwargs)
-                return angles, arrived
+                arrived = self.arm.move_to(
+                    *point, rotation=turned, hold_point=True, **kwargs)
+                return turned, arrived
             except IKError:
                 continue
         return None
+
+    @property
+    def notice(self) -> str | None:
+        """The last blocked or failed action, consumed once by the status reader."""
+        notice, self._notice = self._notice, None
+        return notice
 
     def _say(self, message: str) -> None:
         if message != self._notice:

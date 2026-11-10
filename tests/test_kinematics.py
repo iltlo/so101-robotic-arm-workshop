@@ -10,11 +10,12 @@ from scipy.spatial.transform import Rotation
 
 from so101_control.arm import SO101
 from so101_control.kinematics import (
-    NEAR_STEP_DEG, TURN_TOLERANCE_M, IKError, Kinematics,
+    NEAR_STEP_DEG, TURN_ACCEPT_DEG, TURN_TOLERANCE_M, IKError, Kinematics,
 )
 from so101_utils.config import load_robot, validated_limits
 from so101_utils.model import (
-    JOINTS, gripper_rotation_from_rpy, rotate_gripper, tool_rpy,
+    JOINTS, gripper_rotation_from_rpy, nod_gripper, pitch_about_axis, pitch_axis,
+    spin_gripper, tool_rpy,
 )
 
 # Recorded from PlaCo before that extra was removed. The live gap was about
@@ -63,11 +64,15 @@ def test_facing_forward_is_level_in_the_base(kin):
     assert rpy[2] == pytest.approx(0.0, abs=0.2)
 
 
-def test_pitch_90_points_the_fingers_down_and_the_wrist_is_yaw(kin):
+def test_pitch_90_points_the_fingers_down_and_the_angles_rebuild_it(kin):
     fingers = Rotation.from_euler("xyz", [0.0, 90.0, 40.0], degrees=True).apply([1.0, 0.0, 0.0])
     assert fingers == pytest.approx((0.0, 0.0, -1.0), abs=1e-6)
-    assert tool_rpy(gripper_rotation_from_rpy((0.0, 90.0, 40.0))) == pytest.approx(
-        (0.0, 90.0, 40.0), abs=0.1)
+    # At pitch 90 the wrist twist reads as either roll or yaw. SciPy returns the
+    # pair with yaw zero, and that pair still rebuilds the same rotation.
+    vertical = gripper_rotation_from_rpy((0.0, 90.0, 40.0))
+    led = tool_rpy(vertical)
+    assert led == pytest.approx((-40.0, 90.0, 0.0), abs=0.1)
+    assert gripper_rotation_from_rpy(led) == pytest.approx(vertical, abs=1e-9)
 
     def angles(wrist_roll):
         joints = {name: 0.0 for name in JOINTS}
@@ -77,15 +82,13 @@ def test_pitch_90_points_the_fingers_down_and_the_wrist_is_yaw(kin):
 
     level = angles(0.0)
     twisted = angles(20.0)
-    assert level[0] == pytest.approx(0.0, abs=0.2)
     assert level[1] == pytest.approx(90.0, abs=0.2)
-    assert twisted[0] == pytest.approx(0.0, abs=0.2)
     assert twisted[1] == pytest.approx(90.0, abs=0.2)
-    assert twisted[2] - level[2] == pytest.approx(20.0, abs=0.5)
+    assert abs(twisted[0] - level[0]) > 5.0
 
 
-def test_a_few_degrees_off_straight_down_still_puts_the_wrist_in_yaw(kin):
-    """The live arm sits a few degrees off vertical. Wrist twist is still yaw."""
+def test_a_few_degrees_off_straight_down_reports_the_fk_pitch(kin):
+    """Near vertical the reported pitch is the FK angle, not a rounded 90."""
     def angles(wrist_roll):
         joints = {name: 0.0 for name in JOINTS}
         joints["shoulder_pan"] = -60.0
@@ -95,11 +98,22 @@ def test_a_few_degrees_off_straight_down_still_puts_the_wrist_in_yaw(kin):
 
     level = angles(0.0)
     twisted = angles(15.0)
-    assert level[0] == pytest.approx(0.0, abs=0.2)
-    assert level[1] == pytest.approx(90.0, abs=0.2)
-    assert twisted[0] == pytest.approx(0.0, abs=0.2)
-    assert twisted[1] == pytest.approx(90.0, abs=0.2)
-    assert twisted[2] - level[2] == pytest.approx(15.0, abs=0.5)
+    assert level[1] == pytest.approx(80.0, abs=0.2)
+    assert twisted[1] == pytest.approx(80.0, abs=0.2)
+    assert twisted[0] - level[0] == pytest.approx(-15.0, abs=0.5)
+    assert twisted[2] == pytest.approx(level[2], abs=0.5)
+
+
+def test_the_reported_pitch_tracks_the_fk_through_the_vertical_band(kin):
+    """A wrist sweep through 70-89° reports each pitch; nothing is rounded up."""
+    def pitch(wrist_flex):
+        joints = {name: 0.0 for name in JOINTS}
+        joints["wrist_flex"] = wrist_flex
+        return tool_rpy(kin.fk(joints)[:3, :3])[1]
+
+    seen = [pitch(flex) for flex in (70.0, 75.0, 80.0, 85.0, 89.0)]
+    assert seen == pytest.approx([70.0, 75.0, 80.0, 85.0, 89.0], abs=0.1)
+
 
 
 def test_a_side_pose_keeps_roll_and_pitch_apart(kin):
@@ -177,26 +191,216 @@ def test_a_turn_holds_the_tool_point(kin):
     state = {name: 0.0 for name in JOINTS}
     anchor = kin.tool_point(kin.fk(state))
     for _ in range(4):
-        rpy = rotate_gripper(tool_rpy(kin.fk(state)[:3, :3]), pitch=5.0)
-        goal = gripper_rotation_from_rpy(rpy)
-        state = kin.position_ik(state, anchor, limits, rpy=rpy,
+        before = kin.fk(state)[:3, :3]
+        axis = kin.joint_axes(state)["wrist_flex"]
+        goal = nod_gripper(before, axis, 5.0)
+        state = kin.position_ik(state, anchor, limits, rotation=goal,
                                 follow_yaw=True, local_only=True)
         pose = kin.fk(state)
         assert np.linalg.norm(kin.tool_point(pose) - anchor) <= TURN_TOLERANCE_M
-        # World-Z rotation is the direction this arm cannot hold; roll and pitch
-        # are the ones a pitch key asks for.
-        error = Rotation.from_matrix(goal @ pose[:3, :3].T).as_rotvec()
-        assert np.rad2deg(np.linalg.norm(error[:2])) < 0.5
+        # A turn owns the whole frame; the full error is what the keys ask for.
+        error = Rotation.from_matrix(goal @ pose[:3, :3].T).magnitude()
+        assert np.rad2deg(error) < 0.5
     assert tool_rpy(kin.fk(state)[:3, :3])[1] == pytest.approx(20.0, abs=1.0)
+
+
+def test_a_short_translation_near_vertical_keeps_the_lean(kin):
+    """A sideways step near vertical must not throw away the 85° lean."""
+    limits = validated_limits(load_robot())
+    state = {name: 0.0 for name in JOINTS}
+    state["wrist_flex"] = 85.0
+    before = kin.fk(state)
+    point = kin.tool_point(before)
+    solved = kin.position_ik(state, point + np.array([0.0, 0.005, 0.0]), limits)
+    after = kin.fk(solved)
+    assert kin.tool_point(after)[1] - point[1] > 0.0035
+    assert tool_rpy(after[:3, :3])[:2] == pytest.approx(
+        tool_rpy(before[:3, :3])[:2], abs=0.5)
+
+
+# Live feedback with the tool exactly at the vertical singularity: pitch 90,
+# where roll and yaw describe the same rotation.
+VERTICAL_POSE = {
+    "shoulder_pan": -7.5,
+    "shoulder_lift": -1.8,
+    "elbow_flex": 5.6,
+    "wrist_flex": 86.2,
+    "wrist_roll": -8.2,
+}
+
+# Live feedback from the pose where the roll and pitch keys stopped moving:
+# near vertical, twisted wrist, at the edge of the reach.
+USER_POSE = {
+    "shoulder_pan": 16.6,
+    "shoulder_lift": 9.4,
+    "elbow_flex": -5.1,
+    "wrist_flex": 89.8,
+    "wrist_roll": -138.4,
+}
+
+
+def _press_turn(kin, state, limits, anchor, *, roll=0.0, pitch=0.0):
+    """One keyboard turn press, exactly as teleop builds it."""
+    before = kin.fk(state)
+    turned = spin_gripper(before[:3, :3], roll)
+    if pitch:
+        turned = nod_gripper(turned, kin.joint_axes(state)["wrist_flex"], pitch)
+    solved = kin.position_ik(state, anchor, limits, rotation=turned,
+                             follow_yaw=True, local_only=True,
+                             tolerance_m=TURN_TOLERANCE_M,
+                             tolerance_deg=TURN_ACCEPT_DEG)
+    after = kin.fk(solved)
+    turned_deg = np.rad2deg(
+        Rotation.from_matrix(before[:3, :3].T @ after[:3, :3]).magnitude())
+    return solved, turned_deg, np.linalg.norm(kin.tool_point(after) - anchor)
+
+
+def test_pitch_steps_at_the_edge_pose_hold_the_point(kin):
+    """At the live edge pose a pitch key must turn, not stop at the wrist."""
+    limits = validated_limits(load_robot())
+    state = dict(USER_POSE)
+    anchor = kin.tool_point(kin.fk(state))
+    for _ in range(5):
+        state, turned, drift = _press_turn(kin, state, limits, anchor, pitch=-5.0)
+        assert turned == pytest.approx(5.0, abs=0.5)
+        assert drift <= TURN_TOLERANCE_M
+    # Holding the point splits each turn across the arm, so the wrist travels
+    # further than the 5° frame turn; it must still clear the old 90° stall.
+    assert USER_POSE["wrist_flex"] - state["wrist_flex"] > 20.0
+
+
+def test_roll_steps_at_the_edge_pose_hold_the_point(kin):
+    """Both roll directions must turn the tool, not be swallowed by the yaw gate."""
+    limits = validated_limits(load_robot())
+    for direction in (5.0, -5.0):
+        state = dict(USER_POSE)
+        anchor = kin.tool_point(kin.fk(state))
+        for _ in range(5):
+            state, turned, drift = _press_turn(
+                kin, state, limits, anchor, roll=direction)
+            assert turned == pytest.approx(5.0, abs=0.5)
+            assert drift <= TURN_TOLERANCE_M
+
+
+FLAT_WRIST_POSE = {
+    "shoulder_pan": 0.0,
+    "shoulder_lift": 0.0,
+    "elbow_flex": 0.0,
+    "wrist_flex": 20.0,
+    "wrist_roll": 0.0,
+}
+
+
+def _pitch_press(kin, state, limits, anchor, up: bool):
+    before = kin.fk(state)
+    axis = kin.joint_axes(state)["wrist_flex"]
+    goal = nod_gripper(before[:3, :3], pitch_axis(before[:3, :3], axis),
+                       5.0 if up else -5.0)
+    solved = kin.position_ik(state, anchor, limits, rotation=goal,
+                             follow_yaw=True, local_only=True,
+                             tolerance_m=TURN_TOLERANCE_M,
+                             tolerance_deg=TURN_ACCEPT_DEG)
+    after = kin.fk(solved)
+    return solved, pitch_about_axis(before[:3, :3], axis), pitch_about_axis(after[:3, :3], axis)
+
+
+def test_pitch_plus_increases_pitch_below_and_above_vertical(kin):
+    """Pitch + nods down through 90, on either side of the base."""
+    limits = validated_limits(load_robot())
+    poses = (
+        FLAT_WRIST_POSE,
+        USER_POSE,
+        {"shoulder_pan": 0.0, "wrist_flex": 95.0},
+        {"shoulder_pan": 110.0, "wrist_flex": 40.0},
+        {"shoulder_pan": -110.0, "wrist_flex": 95.0},
+    )
+    for pose in poses:
+        state = {name: float(pose.get(name, 0.0)) for name in JOINTS}
+        anchor = kin.tool_point(kin.fk(state))
+        state, before, after = _pitch_press(kin, state, limits, anchor, up=True)
+        assert after - before > 2.0
+        state, before, after = _pitch_press(kin, state, limits, anchor, up=False)
+        assert after - before < -2.0
+
+
+def test_pitch_past_straight_down_is_reported_above_90(kin):
+    """The folded Euler triple is pitch 67 with roll and yaw near 180; the nod is 113."""
+    joints = {name: 0.0 for name in JOINTS}
+    joints["wrist_flex"] = 113.0
+    matrix = kin.fk(joints)
+    axis = kin.joint_axes(joints)["wrist_flex"]
+    reported = tool_rpy(matrix[:3, :3], axis)
+    folded = tool_rpy(matrix[:3, :3])
+    assert reported[1] == pytest.approx(113.0, abs=0.5)
+    assert reported[1] > 90.0
+    assert abs(reported[0]) < 20.0
+    assert abs(reported[2]) < 20.0
+    assert folded[1] == pytest.approx(67.0, abs=1.0)
+    assert abs(folded[0]) > 150.0
+    assert gripper_rotation_from_rpy(reported) == pytest.approx(matrix[:3, :3], abs=1e-6)
+
+    facing_back = {name: 0.0 for name in JOINTS}
+    facing_back["shoulder_pan"] = 180.0
+    facing_back["wrist_flex"] = 25.0
+    back = kin.fk(facing_back)
+    back_axis = kin.joint_axes(facing_back)["wrist_flex"]
+    assert tool_rpy(back[:3, :3], back_axis)[1] == pytest.approx(25.0, abs=0.5)
+
+    twisted = {name: 0.0 for name in JOINTS}
+    twisted["wrist_flex"] = 30.0
+    twisted["wrist_roll"] = 170.0
+    twist = kin.fk(twisted)
+    twist_rpy = tool_rpy(twist[:3, :3], kin.joint_axes(twisted)["wrist_flex"])
+    assert twist_rpy[1] == pytest.approx(30.0, abs=0.5)
+    assert abs(twist_rpy[0]) > 150.0
+
+
+def test_a_pitch_press_at_the_vertical_singularity_leaves_it(kin):
+    limits = validated_limits(load_robot())
+    state = dict(VERTICAL_POSE)
+    matrix = kin.fk(state)
+    anchor = kin.tool_point(matrix)
+    assert tool_rpy(matrix[:3, :3])[1] == pytest.approx(90.0, abs=0.1)
+    turned = nod_gripper(matrix[:3, :3], kin.joint_axes(state)["wrist_flex"], 5.0)
+    solved = kin.position_ik(state, anchor, limits,
+                             rotation=turned,
+                             follow_yaw=True, local_only=True,
+                             tolerance_m=TURN_TOLERANCE_M)
+    pose = kin.fk(solved)
+    # The Euler pitch folds at 90; the frame itself must turn by the whole press.
+    turned_deg = np.rad2deg(Rotation.from_matrix(
+        matrix[:3, :3].T @ pose[:3, :3]).magnitude())
+    assert turned_deg == pytest.approx(5.0, abs=0.5)
+    assert tool_rpy(pose[:3, :3])[1] < 89.0
+    assert np.linalg.norm(kin.tool_point(pose) - anchor) <= TURN_TOLERANCE_M
+
+
+def test_a_roll_press_at_the_vertical_singularity_twists_the_tool(kin):
+    """At pitch 90 roll is world-Z; a yaw-free solve would swallow the press."""
+    limits = validated_limits(load_robot())
+    state = dict(VERTICAL_POSE)
+    before = kin.fk(state)
+    anchor = kin.tool_point(before)
+    turned = spin_gripper(before[:3, :3], 5.0)
+    solved = kin.position_ik(state, anchor, limits,
+                             rotation=turned,
+                             follow_yaw=True, local_only=True,
+                             tolerance_m=TURN_TOLERANCE_M)
+    after = kin.fk(solved)
+    turned_deg = np.rad2deg(
+        Rotation.from_matrix(before[:3, :3].T @ after[:3, :3]).magnitude())
+    assert turned_deg == pytest.approx(5.0, abs=1.0)
+    assert np.linalg.norm(kin.tool_point(after) - anchor) <= TURN_TOLERANCE_M
 
 
 def test_a_turn_raises_instead_of_jumping_when_it_cannot_hold(kin):
     limits = validated_limits(load_robot())
     state = {name: 0.0 for name in JOINTS}
     anchor = kin.tool_point(kin.fk(state))
-    rpy = rotate_gripper(tool_rpy(kin.fk(state)[:3, :3]), pitch=60.0)
+    turned = nod_gripper(kin.fk(state)[:3, :3],
+                         kin.joint_axes(state)["wrist_flex"], 60.0)
     with pytest.raises(IKError):
-        kin.position_ik(state, anchor, limits, rpy=rpy,
+        kin.position_ik(state, anchor, limits, rotation=turned,
                         follow_yaw=True, local_only=True)
 
 
@@ -207,8 +411,9 @@ def test_a_turn_survives_a_mid_workspace_pose(kin):
                             limits)
     anchor = kin.tool_point(kin.fk(state))
     for _ in range(8):
-        rpy = rotate_gripper(tool_rpy(kin.fk(state)[:3, :3]), pitch=5.0)
-        state = kin.position_ik(state, anchor, limits, rpy=rpy,
+        axis = kin.joint_axes(state)["wrist_flex"]
+        turned = nod_gripper(kin.fk(state)[:3, :3], axis, 5.0)
+        state = kin.position_ik(state, anchor, limits, rotation=turned,
                                 follow_yaw=True, local_only=True)
         assert np.linalg.norm(kin.tool_point(kin.fk(state)) - anchor) <= TURN_TOLERANCE_M
     assert tool_rpy(kin.fk(state)[:3, :3])[1] == pytest.approx(40.0, abs=1.5)
@@ -219,11 +424,15 @@ def test_downward_steps_keep_the_twist(kin):
     limits = validated_limits(load_robot())
     state = kin.position_ik({name: 0.0 for name in JOINTS}, (0.28, -0.05, 0.04),
                             limits, downward=True)
-    start = tool_rpy(kin.fk(state)[:3, :3])
+    start = kin.fk(state)[:3, :3]
     for _ in range(4):
         target = kin.tool_point(kin.fk(state)) + np.array([0.0, 0.005, 0.0])
         state = kin.position_ik(state, target, limits, downward=True)
-        assert tool_rpy(kin.fk(state)[:3, :3]) == pytest.approx(start, abs=0.5)
+        # At pitch 90 several roll/yaw pairs describe one frame, so compare the
+        # frame itself: the jaws must keep their heading through the step.
+        after = kin.fk(state)[:3, :3]
+        turned = Rotation.from_matrix(start.T @ after).magnitude()
+        assert np.rad2deg(turned) < 0.5
 
 
 def test_ik_returns_to_a_known_tcp(kin):

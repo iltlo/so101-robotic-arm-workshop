@@ -484,7 +484,12 @@ class Agent:
 
         def job():
             self._require_motion()
-            self.arm.move_joint(name, delta_deg)
+            try:
+                self.arm.move_joint(name, delta_deg)
+            finally:
+                # The arm moved outside teleop, so the next key must seed from
+                # the measured pose, not a point and frame cached before the jog.
+                self._clear_teleop()
             self.message = f"Jogged {name} by {float(delta_deg):.1f} deg"
             return self.message
 
@@ -886,6 +891,11 @@ class Agent:
                 pose = {
                     "x": current.x, "y": current.y, "z": current.z,
                     "roll": current.roll, "pitch": current.pitch, "yaw": current.yaw,
+                    # w, x, y, z: the one orientation value near pitch ±90.
+                    "quaternion": [float(value) for value in current.quaternion],
+                    # Fingers above the horizontal, + up. This folds at vertical.
+                    # Pitch above is the nod the F/V keys drive, and it passes 90.
+                    "tool_pitch": current.tool_pitch,
                 }
                 limits = {
                     name: [float(low), float(high)]
@@ -1155,12 +1165,19 @@ class Agent:
                     future.set_exception(exc)
 
     def _idle_teleop(self) -> None:
-        if self.teleop is None:
+        teleop = self.teleop
+        if teleop is None:
             return
         try:
-            self.teleop.poll()
+            teleop.poll()
         except Exception as exc:
             self.message = str(exc)
+            return
+        # A blocked turn returns normally, so the browser cannot see it unless
+        # the notice is copied out; otherwise a wrist at its stop looks dead.
+        notice = teleop.notice
+        if notice:
+            self.message = notice
 
     def _viewer_loop(self) -> None:
         while not self._stop.wait(0.05):
@@ -1311,7 +1328,12 @@ class Agent:
             target = click_target(
                 pixel, self.cam.intrinsics, hand["base_T_camera"], height_m,
             )
-            arrived = move(self.arm, _Reporter(self, token), target)
+            try:
+                arrived = move(self.arm, _Reporter(self, token), target)
+            finally:
+                # Click and pick move the arm on their own; drop any teleop
+                # point and frame cached before them.
+                self._clear_teleop()
             return {
                 "status": done if arrived else "replaced",
                 "target": [float(value) for value in target],

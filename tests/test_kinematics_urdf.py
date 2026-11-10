@@ -15,7 +15,7 @@ from so101_control.kinematics import (
     DOWNWARD_Z, TURN_TOLERANCE_M, Kinematics, _load_chain,
 )
 from so101_utils.config import load_robot, validated_limits
-from so101_utils.model import JOINTS, rotate_gripper, tool_rpy
+from so101_utils.model import JOINTS, spin_gripper, tool_rpy
 
 URDF = Path(__file__).parents[1] / "assets/SO101/so101_new_calib.urdf"
 
@@ -219,8 +219,8 @@ def test_a_small_roll_turn_near_the_base_axis_holds_the_point(kin, limits):
     state = dict(zip(JOINTS, (-67.6, 71.5, 99.9, -63.2, -41.4)))
     anchor = kin.tool_point(kin.fk(state))
     assert np.hypot(anchor[0], anchor[1]) < 0.05
-    rpy = rotate_gripper(tool_rpy(kin.fk(state)[:3, :3]), roll=10.0)
-    solved = kin.position_ik(state, anchor, limits, rpy=rpy, follow_yaw=True,
+    turned = spin_gripper(kin.fk(state)[:3, :3], 10.0)
+    solved = kin.position_ik(state, anchor, limits, rotation=turned, follow_yaw=True,
                              local_only=True, tolerance_m=TURN_TOLERANCE_M)
     assert np.linalg.norm(kin.tool_point(kin.fk(solved)) - anchor) <= TURN_TOLERANCE_M
 
@@ -233,9 +233,14 @@ def test_invalid_goals_and_limits_are_rejected(kin, limits):
         kin.position_ik(start, (0.2, np.nan, 0.0), limits)
     with pytest.raises(ValueError, match="Invalid RPY target"):
         kin.position_ik(start, (0.28, -0.05, 0.02), limits, rpy=(0.0, 90.0))
-    with pytest.raises(ValueError, match="replaces an rpy target"):
+    with pytest.raises(ValueError, match="replaces an orientation target"):
         kin.position_ik(start, (0.28, -0.05, 0.02), limits, downward=True,
                         rpy=(0.0, 90.0, 0.0))
+    with pytest.raises(ValueError, match="Invalid rotation target"):
+        kin.position_ik(start, (0.28, -0.05, 0.02), limits, rotation=np.eye(2))
+    with pytest.raises(ValueError, match="not both"):
+        kin.position_ik(start, (0.28, -0.05, 0.02), limits, rpy=(0.0, 90.0, 0.0),
+                        rotation=np.eye(3))
     incomplete = dict(limits)
     del incomplete["wrist_roll"]
     with pytest.raises(ValueError, match="Limits required"):

@@ -2,7 +2,7 @@
 
     WASD or arrows : x / y
     Q / E          : z down / up
-    Z / C          : roll
+    Z / C          : rotate the gripper
     F / V          : pitch
     H              : home
     R              : rest

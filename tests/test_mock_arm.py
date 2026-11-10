@@ -8,7 +8,9 @@ from so101_control import SO101
 from so101_control.arm import DEFAULT_EE_TOOL_OFFSET_M, OPEN_PERCENT
 from so101_control.backend import MockBackend, OffsetBackend
 from so101_control.kinematics import TURN_TOLERANCE_M
-from so101_utils.model import JOINTS, rotate_gripper
+from so101_utils.model import (
+    JOINTS, gripper_rotation_from_rpy, nod_gripper, tool_pitch, tool_rpy,
+)
 
 
 def test_context_manager_and_speed_clamp():
@@ -101,14 +103,78 @@ def test_hold_point_turns_keep_the_tcp():
         anchor = arm.get_pose()
         for _ in range(4):
             pose = arm.get_pose()
-            angles = rotate_gripper((pose.roll, pose.pitch, pose.yaw), pitch=5.0)
-            arm.move_to(anchor.x, anchor.y, anchor.z, *angles,
+            frame = arm.gripper_frame_pose()
+            turned = nod_gripper(frame[:3, :3], arm.nod_axis(), 5.0)
+            arm.move_to(anchor.x, anchor.y, anchor.z, rotation=turned,
                         hold_point=True, wait=False)
             moved = arm.get_pose()
             assert np.linalg.norm(
                 [moved.x - anchor.x, moved.y - anchor.y, moved.z - anchor.z]
             ) <= TURN_TOLERANCE_M
             assert moved.pitch - pose.pitch == pytest.approx(5.0, abs=0.5)
+
+
+def test_move_to_accepts_an_orientation_matrix():
+    with SO101.connect(mock=True) as arm:
+        anchor = arm.get_pose()
+        frame = arm.gripper_frame_pose()
+        turned = nod_gripper(frame[:3, :3], arm.nod_axis(), -5.0)
+        arm.move_to(anchor.x, anchor.y, anchor.z, rotation=turned,
+                    hold_point=True, wait=False)
+        moved = arm.get_pose()
+        assert np.linalg.norm(
+            [moved.x - anchor.x, moved.y - anchor.y, moved.z - anchor.z]
+        ) <= TURN_TOLERANCE_M
+        degree = np.rad2deg(Rotation.from_matrix(
+            frame[:3, :3].T @ arm.gripper_frame_pose()[:3, :3]).magnitude())
+        assert degree == pytest.approx(5.0, abs=0.5)
+
+
+def test_the_pose_quaternion_is_one_value_and_matches_fk():
+    with SO101.connect(mock=True) as arm:
+        frame = arm.gripper_frame_pose()
+        pose = arm.get_pose()
+        quaternion = pose.quaternion
+        assert quaternion.shape == (4,)
+        assert np.linalg.norm(quaternion) == pytest.approx(1.0)
+        first = next(value for value in quaternion if abs(value) > 1e-12)
+        assert first > 0.0
+        w, x, y, z = quaternion
+        rebuilt = Rotation.from_quat([x, y, z, w]).as_matrix()
+        assert np.rad2deg(
+            Rotation.from_matrix(frame[:3, :3].T @ rebuilt).magnitude()) < 1e-6
+
+
+def test_spin_wrist_turns_the_gripper_and_pitch_passes_90():
+    with SO101.connect(mock=True) as arm:
+        assert arm.spin_wrist(5.0) is True
+        assert arm.get_joints()["wrist_roll"] == pytest.approx(5.0)
+        assert arm.spin_wrist(-5.0) is True
+        assert arm.get_joints()["wrist_roll"] == pytest.approx(0.0, abs=1e-6)
+        arm._backend.positions["wrist_flex.pos"] = 113.0
+        assert arm.get_pose().pitch == pytest.approx(113.0, abs=0.5)
+
+
+def test_the_pose_reports_the_tool_pitch_the_keys_drive():
+    with SO101.connect(mock=True) as arm:
+        pose = arm.get_pose()
+        frame = arm.gripper_frame_pose()
+        assert pose.tool_pitch == pytest.approx(tool_pitch(frame[:3, :3]))
+    # At Euler pitch 90 the RPY triple folds; the finger elevation does not.
+    leaned = gripper_rotation_from_rpy((10.0, 90.0, 20.0))
+    assert tool_pitch(leaned) == pytest.approx(-90.0, abs=1e-6)
+
+
+def test_target_rotation_matches_the_reported_target_pose():
+    with SO101.connect(mock=True) as arm:
+        pose = arm.get_pose()
+        arm.move_to(pose.x + 0.01, pose.y, pose.z, wait=False)
+        rotation = arm.target_rotation()
+        assert rotation.shape == (3, 3)
+        assert np.linalg.det(rotation) == pytest.approx(1.0)
+        target = arm.target_pose()
+        assert (target.roll, target.pitch, target.yaw) == pytest.approx(
+            tool_rpy(rotation), abs=1e-6)
 
 
 def test_move_to_changes_pitch_in_the_base_frame():

@@ -3,16 +3,23 @@
 import math
 import time
 
+import numpy as np
+
 from so101_utils.config import joint_offsets, load_robot, validated_limits
-from so101_utils.model import JOINTS, tool_rpy
+from so101_utils.model import JOINTS, canonical_quaternion, tool_pitch, tool_rpy
 
 from .backend import MockBackend, OffsetBackend, connect_live, release_overload
-from .kinematics import DEFAULT_TOLERANCE_M, Kinematics, TURN_TOLERANCE_M
+from .kinematics import (
+    DEFAULT_TOLERANCE_DEG, DEFAULT_TOLERANCE_M, TURN_ACCEPT_DEG, TURN_TOLERANCE_M,
+    Kinematics,
+)
 from .motion import MotionError, joint_state, move_joints
 
 MAX_SPEED_DEG_S = 90.0
 MIN_SPEED_DEG_S = 1.0
 MAX_JOINT_STEP_DEG = 2.0
+# One roll-key press. Larger than a jog, still one short wrist turn.
+MAX_WRIST_SPIN_DEG = 30.0
 MOVE_TIMEOUT_S = 60.0
 
 # Servo loop periods, seconds. The mock is slower so Rerun can draw each pose.
@@ -46,13 +53,20 @@ REST_JOINTS = {
 class Pose:
     """Gripper pose in the robot base frame."""
 
-    def __init__(self, x: float, y: float, z: float, roll: float, pitch: float, yaw: float):
+    def __init__(self, x: float, y: float, z: float, roll: float, pitch: float, yaw: float,
+                 quaternion, tool_pitch: float = 0.0) -> None:
         self.x, self.y, self.z = float(x), float(y), float(z)
         self.roll, self.pitch, self.yaw = float(roll), float(pitch), float(yaw)
+        # w, x, y, z. One value per orientation, unlike the Euler triple at ±90.
+        self.quaternion = np.asarray(quaternion, dtype=float)
+        # Fingers above the horizontal: what the pitch keys drive, + up.
+        self.tool_pitch = float(tool_pitch)
 
     def __repr__(self) -> str:
         return (f"Pose(x={self.x:.4f} m, y={self.y:.4f} m, z={self.z:.4f} m, "
-                f"roll={self.roll:.1f} deg, pitch={self.pitch:.1f} deg, yaw={self.yaw:.1f} deg)")
+                f"roll={self.roll:.1f} deg, pitch={self.pitch:.1f} deg, yaw={self.yaw:.1f} deg, "
+                f"tool_pitch={self.tool_pitch:.1f} deg, "
+                f"q=[{', '.join(f'{value:+.4f}' for value in self.quaternion)}])")
 
 
 class SO101:
@@ -71,6 +85,7 @@ class SO101:
         self._goal = None
         self._sent = None
         self._target_pose = None
+        self._target_rotation = None
         self._on_motion = None
         self._on_target = None
         self.torque_on = True
@@ -184,12 +199,31 @@ class SO101:
 
     def pose_at(self, joints: dict[str, float]) -> Pose:
         """Tool pose for a joint sample already read from the arm."""
-        return self._pose_of(self._kin.fk(joints))
+        return self._pose_of(self._kin.fk(joints), joints)
 
-    def _pose_of(self, matrix) -> Pose:
-        roll, pitch, yaw = tool_rpy(matrix[:3, :3])
+    def _pose_of(self, matrix, joints: dict[str, float] | None = None) -> Pose:
+        axis = None if joints is None else self.nod_axis(joints)
+        roll, pitch, yaw = tool_rpy(matrix[:3, :3], axis)
         x, y, z = self._kin.tool_point(matrix)
-        return Pose(x, y, z, roll, pitch, yaw)
+        return Pose(x, y, z, roll, pitch, yaw, canonical_quaternion(matrix[:3, :3]),
+                    tool_pitch(matrix[:3, :3]))
+
+    def _seed_joints(self) -> dict[str, float]:
+        """Joints the next solve starts from: the last command, else the encoders."""
+        if self._sent and set(JOINTS) <= set(self._sent):
+            return {name: float(self._sent[name]) for name in JOINTS}
+        return self.get_joints()
+
+    def nod_axis(self, joints: dict[str, float] | None = None) -> np.ndarray:
+        """World axis a pitch key nods about: the arm's flexion axis.
+
+        shoulder_lift, elbow_flex, and wrist_flex turn about one line. A pitch
+        turn about it can hold the tool point; a turn about the gripper's own Y
+        cannot, which is what blocked the pitch keys near vertical.
+        """
+        state = self._seed_joints() if joints is None else joints
+        axes = self._kin.joint_axes({name: float(state[name]) for name in JOINTS})
+        return axes["wrist_flex"]
 
     def target_pose(self) -> Pose | None:
         """Tool pose of the last IK solution, before the move settled.
@@ -199,45 +233,83 @@ class SO101:
         """
         return self._target_pose
 
+    def target_rotation(self):
+        """3x3 tool rotation of the last IK solution, exactly as solved.
+
+        `target_pose` reports the Euler decomposition, which at pitch ±90 has
+        more than one valid roll/yaw pair. Teleop turns step from this matrix
+        so the lean carried between presses is never re-interpreted.
+        """
+        return self._target_rotation
+
     def move_to(self, x: float, y: float, z: float,
                 roll: float | None = None, pitch: float | None = None, yaw: float | None = None, *,
-                wait: bool = True, cancel=None, downward: bool = False,
+                rotation=None, wait: bool = True, cancel=None, downward: bool = False,
                 single_goal: bool = False, hold_point: bool = False) -> bool:
         """Move the tool to a pose in the base frame.
 
         x, y, z are metres of the tool point: `ee_tool_offset` along
-        gripper_frame_link +Z. roll, pitch, yaw are base-frame degrees; pass all
-        three or none. Pitch +90 points the fingers straight down with a fixed
-        twist. None keeps the current orientation, unless `downward` holds the
-        finger axis inside the down cone and leaves the twist free, which is what
-        reaches the edge of the table. `hold_point` keeps the tool point within a
-        couple of millimetres, lets yaw follow the pan, and refuses a branch
-        jump; a turn that cannot stay there raises instead of moving the arm
-        somewhere else. Returns False when `cancel` stops the move.
+        gripper_frame_link +Z. roll, pitch, yaw are base-frame degrees, or pass
+        `rotation` as the same orientation in a 3x3 matrix; near pitch ±90 only
+        the matrix has one value. Pass one form or neither. None keeps the
+        current orientation, unless `downward` holds the finger axis inside the
+        down cone and leaves the twist free, which is what reaches the edge of
+        the table. `hold_point` keeps the tool point within a couple of
+        millimetres and refuses a branch jump; a turn that cannot stay there
+        raises instead of moving the arm somewhere else. Returns False when
+        `cancel` stops the move.
         """
         point = (float(x), float(y), float(z))
         given = (roll, pitch, yaw)
+        if rotation is not None and any(value is not None for value in given):
+            raise ValueError("Pass angles or a rotation, not both")
         if any(value is not None for value in given) and any(value is None for value in given):
             raise ValueError("roll, pitch, and yaw are one pose")
-        if hold_point and roll is None:
-            raise ValueError("hold_point needs roll, pitch, and yaw")
+        if hold_point and roll is None and rotation is None:
+            raise ValueError("hold_point needs a target orientation")
         rpy = None if roll is None else (float(roll), float(pitch), float(yaw))
         # Seed IK from the last command so a small step does not pick a new elbow
         # while the encoders are still catching up. Skip the read when it covers
         # every joint; a keyboard nudge should not wait on the serial port.
-        if self._sent and set(JOINTS) <= set(self._sent):
-            state = {name: float(self._sent[name]) for name in JOINTS}
-        else:
-            state = self.get_joints()
+        state = self._seed_joints()
         targets = self._kin.position_ik(
-            state, point, self._limits, downward=downward, rpy=rpy,
+            state, point, self._limits, downward=downward, rpy=rpy, rotation=rotation,
             follow_yaw=hold_point, local_only=hold_point,
-            tolerance_m=TURN_TOLERANCE_M if hold_point else DEFAULT_TOLERANCE_M)
+            tolerance_m=TURN_TOLERANCE_M if hold_point else DEFAULT_TOLERANCE_M,
+            tolerance_deg=TURN_ACCEPT_DEG if hold_point else DEFAULT_TOLERANCE_DEG)
         matrix = self._kin.fk(targets)
-        self._target_pose = self._pose_of(matrix)
+        self._target_pose = self._pose_of(matrix, targets)
+        self._target_rotation = matrix[:3, :3].copy()
         if self._on_target is not None:
             self._on_target(matrix)
         return self._move(targets, wait=wait, cancel=cancel, single_goal=single_goal)
+
+    def spin_wrist(self, delta_deg: float, *, cancel=None) -> bool:
+        """Rotate the gripper by `delta_deg` about wrist_roll.
+
+        Roll teleop is this joint, not a pose solve. Holding the tool point
+        while twisting the fingers has no solution in some poses, and the key
+        then does nothing. Returns False when `cancel` stops the move.
+        """
+        delta = float(delta_deg)
+        if not math.isfinite(delta) or delta == 0 or abs(delta) > MAX_WRIST_SPIN_DEG:
+            raise ValueError(f"Wrist spin must be non-zero and at most {MAX_WRIST_SPIN_DEG:.0f} degrees")
+        commanded = self._seed_joints()
+        if self._sent and "wrist_roll" in self._sent:
+            base = float(self._sent["wrist_roll"])
+        else:
+            base = float(commanded["wrist_roll"])
+        commanded["wrist_roll"] = base + delta
+        arrived = self._move(
+            {"wrist_roll": commanded["wrist_roll"]}, wait=False, cancel=cancel, single_goal=True)
+        if not arrived:
+            return False
+        matrix = self._kin.fk(commanded)
+        self._target_pose = self._pose_of(matrix, commanded)
+        self._target_rotation = matrix[:3, :3].copy()
+        if self._on_target is not None:
+            self._on_target(matrix)
+        return True
 
     def move_joint(self, name: str, delta_deg: float) -> None:
         """Step one arm joint. The step must be non-zero and at most 2 degrees."""

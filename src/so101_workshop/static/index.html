@@ -440,6 +440,7 @@
     font-size: 12px;
   }
   .readout span { display: block; color: var(--muted); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; }
+  .readout .wide { grid-column: 1 / -1; }
   table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   th, td { text-align: left; padding: 7px 6px; border-bottom: 1px solid var(--line-soft); }
   th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
@@ -772,6 +773,8 @@
             <div><span>Roll °</span><b id="pose-roll">—</b></div>
             <div><span>Pitch °</span><b id="pose-pitch">—</b></div>
             <div><span>Yaw °</span><b id="pose-yaw">—</b></div>
+            <div class="wide"><span>Tool pitch ° (+ up)</span><b id="pose-tool-pitch">—</b></div>
+            <div class="wide"><span>Quaternion w, x, y, z</span><b id="pose-quaternion">—</b></div>
           </div>
           <table style="margin-top:12px">
             <thead><tr><th>Joint</th><th>Deg</th><th>Limits</th></tr></thead>
@@ -1099,6 +1102,12 @@
     $("pose-roll").textContent = pose.roll == null ? "—" : Number(pose.roll).toFixed(1);
     $("pose-pitch").textContent = pose.pitch == null ? "—" : Number(pose.pitch).toFixed(1);
     $("pose-yaw").textContent = pose.yaw == null ? "—" : Number(pose.yaw).toFixed(1);
+    $("pose-tool-pitch").textContent = pose.tool_pitch == null
+      ? "—" : Number(pose.tool_pitch).toFixed(1);
+    const quat = pose.quaternion;
+    $("pose-quaternion").textContent = Array.isArray(quat) && quat.length === 4
+      ? quat.map((value) => Number(value).toFixed(3)).join(", ")
+      : "—";
   }
 
   function renderJoints(arm) {

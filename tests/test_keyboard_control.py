@@ -3,7 +3,14 @@
 import importlib.util
 from pathlib import Path
 
+import numpy as np
 import pytest
+from scipy.spatial.transform import Rotation
+
+from so101_control.kinematics import IKError
+from so101_utils.model import (
+    gripper_rotation_from_rpy, nod_gripper, pitch_about_axis, pitch_axis, tool_rpy,
+)
 
 _SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "keyboard_control.py"
 
@@ -30,6 +37,8 @@ class _Arm:
         self.calls = []
         self.homes = []
         self.rests = []
+        self.spins = []
+        self._target_rotation = np.eye(3)
 
     def get_pose(self):
         return self.pose
@@ -40,16 +49,41 @@ class _Arm:
     def get_joints(self):
         return {"wrist_roll": 0.0, "wrist_flex": 0.0}
 
+    def gripper_frame_pose(self, joints=None):
+        matrix = np.eye(4)
+        matrix[:3, :3] = gripper_rotation_from_rpy(
+            (self.pose.roll, self.pose.pitch, self.pose.yaw))
+        return matrix
+
+    def nod_axis(self, joints=None):
+        return np.asarray(getattr(self, "_axis", (0.0, 1.0, 0.0)), dtype=float)
+
+    def spin_wrist(self, delta_deg, *, cancel=None):
+        self.spins.append(float(delta_deg))
+        self.wrist_roll = getattr(self, "wrist_roll", 0.0) + float(delta_deg)
+        self._target_rotation = self._target_rotation @ Rotation.from_euler(
+            "x", float(delta_deg), degrees=True).as_matrix()
+        return True
+
     def move_to(self, x, y, z, roll=None, pitch=None, yaw=None, wait=True,
-                single_goal=False, hold_point=False, cancel=None):
+                single_goal=False, hold_point=False, cancel=None, rotation=None):
+        if rotation is not None:
+            roll, pitch, yaw = tool_rpy(rotation)
         self.calls.append((x, y, z, roll, pitch, yaw, wait))
         self.single_goal = single_goal
         self.hold_point = hold_point
+        if rotation is not None:
+            self._target_rotation = np.asarray(rotation, dtype=float)
+        elif roll is not None:
+            self._target_rotation = gripper_rotation_from_rpy((roll, pitch, yaw))
         self.target = _Pose(x, y, z, *(value or 0.0 for value in (roll, pitch, yaw)))
         return True
 
     def target_pose(self):
         return self.target
+
+    def target_rotation(self):
+        return self._target_rotation
 
     def home(self, *, wait=True, cancel=None):
         self.homes.append((wait, bool(cancel and cancel())))
@@ -103,23 +137,123 @@ def test_held_key_is_not_paused_while_the_arm_catches_up():
     assert arm.calls[-1][-1] is False
 
 
-def test_f_and_v_step_wrist_pitch():
+def test_f_and_v_increase_and_decrease_pitch():
     module = _load()
     arm = _Arm()
+    start = pitch_about_axis(arm.gripper_frame_pose()[:3, :3], arm.nod_axis())
     teleop = module.Teleop(arm)
     key = module.keyboard.KeyCode.from_char
     teleop.on_press(key("f"))
     teleop.on_release(key("f"))
     teleop.poll()
+    raised = pitch_about_axis(arm._target_rotation, arm.nod_axis())
     teleop.on_press(key("v"))
     teleop.on_release(key("v"))
     teleop.poll()
-    assert arm.calls[0][4] == pytest.approx(teleop.pitch_step)
-    assert arm.calls[1][4] == pytest.approx(0.0)
-    assert arm.calls[0][3] == pytest.approx(0.0)
-    assert arm.calls[0][5] == pytest.approx(0.0)
+    lowered = pitch_about_axis(arm._target_rotation, arm.nod_axis())
+    assert raised - start == pytest.approx(teleop.pitch_step, abs=0.5)
+    assert lowered - raised == pytest.approx(-teleop.pitch_step, abs=0.5)
     assert arm.calls[0][0] == pytest.approx(0.2)
     assert arm.hold_point is True
+
+
+@pytest.mark.parametrize("yaw", [0.0, 180.0])
+def test_f_increases_pitch_whichever_way_the_arm_faces(yaw):
+    """Across the base the flexion axis flips with the arm; pitch + must not."""
+    module = _load()
+    arm = _Arm()
+    arm.pose = _Pose(0.2, 0.0, 0.2, 0.0, 20.0, yaw)
+    arm._axis = (0.0, -1.0, 0.0) if yaw == 180.0 else (0.0, 1.0, 0.0)
+    start = pitch_about_axis(arm.gripper_frame_pose()[:3, :3], arm.nod_axis())
+    teleop = module.Teleop(arm)
+    teleop.on_press(module.keyboard.KeyCode.from_char("f"))
+    teleop.on_release(module.keyboard.KeyCode.from_char("f"))
+    teleop.poll()
+    assert pitch_about_axis(arm._target_rotation, arm.nod_axis()) == pytest.approx(start + 5.0, abs=0.5)
+
+
+class _TightArm(_Arm):
+    """Only a quarter of a pitch press can hold the point; bigger steps are refused."""
+
+    def __init__(self):
+        super().__init__()
+        self.attempts = []
+
+    def move_to(self, x, y, z, roll=None, pitch=None, yaw=None, **kwargs):
+        rotation = kwargs.get("rotation")
+        if rotation is not None:
+            pitch = float(tool_rpy(rotation)[1])
+        self.attempts.append(abs(pitch or 0.0))
+        if rotation is not None and abs(pitch) > 1.25:
+            raise IKError("Cannot hold the tool point through that turn")
+        return super().move_to(x, y, z, roll, pitch, yaw, **kwargs)
+
+
+def test_a_blocked_turn_retries_at_a_quarter_of_a_press():
+    module = _load()
+    arm = _TightArm()
+    teleop = module.Teleop(arm)
+    teleop.on_press(module.keyboard.KeyCode.from_char("v"))
+    teleop.on_release(module.keyboard.KeyCode.from_char("v"))
+    teleop.poll()
+    assert len(arm.attempts) == 3
+    start = pitch_about_axis(arm.gripper_frame_pose()[:3, :3], arm.nod_axis())
+    assert pitch_about_axis(arm._target_rotation, arm.nod_axis()) - start == pytest.approx(-1.25, abs=0.05)
+
+
+class _StuckArm(_Arm):
+    def move_to(self, x, y, z, roll=None, pitch=None, yaw=None, **kwargs):
+        if kwargs.get("rotation") is not None:
+            raise IKError("Cannot hold the tool point through that turn")
+        return super().move_to(x, y, z, roll, pitch, yaw, **kwargs)
+
+
+def test_a_blocked_turn_is_reported_once():
+    module = _load()
+    teleop = module.Teleop(_StuckArm())
+    teleop.on_press(module.keyboard.KeyCode.from_char("v"))
+    teleop.on_release(module.keyboard.KeyCode.from_char("v"))
+    teleop.poll()
+    assert teleop.notice == "Turn blocked: the wrist cannot turn that way here"
+    assert teleop.notice is None
+
+
+def test_a_press_steps_from_the_solved_frame_not_the_reported_angles():
+    """At pitch 90 the reported roll/yaw pair is one of many; the step needs the frame."""
+    module = _load()
+    arm = _Arm()
+    lean = gripper_rotation_from_rpy((10.0, 85.0, 20.0))
+    arm._target_rotation = lean
+    arm.pose = _Pose(0.2, 0.0, 0.2, 0.0, 90.0, -15.0)
+    teleop = module.Teleop(arm)
+    key = module.keyboard.KeyCode.from_char
+    teleop.on_press(key("w"))
+    teleop.on_release(key("w"))
+    teleop.poll()
+    teleop.on_press(key("v"))
+    teleop.on_release(key("v"))
+    teleop.poll()
+    asked = arm._target_rotation
+    axis = pitch_axis(lean, arm.nod_axis())
+    expected = nod_gripper(lean, axis, -5.0)
+    angle = Rotation.from_matrix(expected.T @ asked).magnitude()
+    assert np.rad2deg(angle) < 1e-6
+
+
+def test_z_and_c_spin_the_gripper_when_a_pose_solve_cannot():
+    """Roll is the wrist joint, so a blocked hold-point solve cannot swallow it."""
+    module = _load()
+    arm = _StuckArm()
+    teleop = module.Teleop(arm)
+    key = module.keyboard.KeyCode.from_char
+    teleop.on_press(key("z"))
+    teleop.on_release(key("z"))
+    teleop.poll()
+    teleop.on_press(key("c"))
+    teleop.on_release(key("c"))
+    teleop.poll()
+    assert arm.spins == pytest.approx([teleop.roll_step, -teleop.roll_step])
+    assert arm.calls == []
 
 
 def test_home_does_not_wait_for_settle():

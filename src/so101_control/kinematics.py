@@ -45,17 +45,10 @@ DEFAULT_TOLERANCE_DEG = 8.0
 # one lets the solver trade millimetres of the point for orientation, which reads
 # as the gripper lurching when a pitch key is pressed.
 TURN_TOLERANCE_M = 0.002
-# A turn uses damped least squares on the tool point and tilt. World-Z rotation
-# is free: the five joints cannot hold every orientation, and the pan axis
-# leaves exactly that direction open.
-TURN_DAMPING = 0.05
-TURN_ROTATION_WEIGHT = 0.6
-TURN_MAX_STEP_DEG = 15.0
-TURN_ITERATIONS = 80
-TURN_SETTLE_M = 0.0005
-TURN_SETTLE_DEG = 0.2
-_TURN_SQRT_WEIGHTS = np.sqrt([1.0, 1.0, 1.0, TURN_ROTATION_WEIGHT,
-                              TURN_ROTATION_WEIGHT, TURN_ROTATION_WEIGHT])
+# A turn owns the whole tool frame, world-Z included. World-Z is the direction a
+# five-joint arm cannot hold on a bare point, so a turn gate that ignored it would
+# accept a missed press and move the arm a little without turning it.
+TURN_ACCEPT_DEG = 0.5
 # Metres and radians share one residual. A smaller damping tracks the recorded
 # joint answers; a larger one stalls short of them.
 _IK_DAMPING = 1e-3
@@ -422,6 +415,13 @@ class Kinematics:
         self._remember([float(state[name]) for name in JOINTS])
         return transform(self._ee)
 
+    @_locked
+    def joint_axes(self, state: dict[str, float]) -> dict[str, np.ndarray]:
+        """World axis of each arm joint at `state`, in the base frame."""
+        axes, _pivots, _rotation, _translation = self._remember(
+            [float(state[name]) for name in JOINTS])
+        return {name: axes[index].copy() for index, name in enumerate(JOINTS)}
+
     def tool_point(self, pose: np.ndarray) -> np.ndarray:
         """Point `ee_tool_offset` along gripper_frame +Z."""
         pose = np.asarray(pose, dtype=float)
@@ -557,61 +557,6 @@ class Kinematics:
                 break
         return solved
 
-    def _tcp_jacobian(self, angles):
-        """Tool-point linear and angular Jacobians, and the pose they came from."""
-        linear, angular, point, pose = self._jacobian(np.asarray(angles, dtype=float))
-        return linear, angular, point, pose[:3, :3]
-
-    def _turn_ik(self, seed, goal, rotation, lower, upper, tolerance_m, *,
-                 free_yaw: bool):
-        """Hold the tool point while the tool turns, or None if it cannot.
-
-        Damped least squares on position plus the tilt the arm can meet. Steps
-        stay inside `lower`/`upper`, which the caller narrows to the near window,
-        so a blocked turn cannot snap to another arm branch. World-Z rotation is
-        free only when the pan carries the tool: on the base axis a wrist twist
-        can hold the yaw, so a yaw goal is honoured there.
-        """
-        target = np.asarray(goal, dtype=float)
-        angles = np.clip(np.asarray(seed, dtype=float), lower, upper)
-        best, best_error = angles.copy(), np.inf
-        settle_m = min(float(tolerance_m), TURN_SETTLE_M)
-
-        def tilt_error(pose) -> np.ndarray:
-            error = _rotvec(rotation @ pose.T)
-            if free_yaw:
-                error[2] = 0.0
-            return error
-
-        for _ in range(TURN_ITERATIONS):
-            linear, angular, point, pose = self._tcp_jacobian(angles)
-            offset = target - point
-            error = tilt_error(pose)
-            weight = float(np.linalg.norm(offset)) + TURN_ROTATION_WEIGHT * float(
-                np.linalg.norm(error))
-            if weight < best_error:
-                best, best_error = angles.copy(), weight
-            if (np.linalg.norm(offset) <= settle_m
-                    and np.rad2deg(np.linalg.norm(error)) <= TURN_SETTLE_DEG):
-                return _Solution(angles, point, pose, float(np.linalg.norm(offset)))
-            jacobian = np.vstack((linear, angular))
-            weighted = _TURN_SQRT_WEIGHTS[:, None] * jacobian
-            weighted_error = _TURN_SQRT_WEIGHTS * np.concatenate((offset, error))
-            step, _coupling = _damped_step(weighted, weighted_error, TURN_DAMPING)
-            limit = np.deg2rad(TURN_MAX_STEP_DEG)
-            moved = np.clip(angles + np.rad2deg(np.clip(step, -limit, limit)),
-                            lower, upper)
-            if np.allclose(moved, angles, atol=1e-4):
-                break
-            angles = moved
-        linear, angular, point, pose = self._tcp_jacobian(best)
-        error = tilt_error(pose)
-        position_error = float(np.linalg.norm(target - point))
-        if (position_error > tolerance_m
-                or np.rad2deg(np.linalg.norm(error)) > TURN_SETTLE_DEG):
-            return None
-        return _Solution(best, point, pose, position_error)
-
     def _downward_twist_free(self, seed_deg, target, lower_deg, upper_deg,
                              tolerance_m: float) -> _Solution:
         """Joint degrees that put the tool point on `target` inside the down cone.
@@ -655,29 +600,33 @@ class Kinematics:
     def position_ik(self, state: dict[str, float], target, limits: dict[str, tuple[float, float]],
                     *, tolerance_m: float = DEFAULT_TOLERANCE_M,
                     tolerance_deg: float = DEFAULT_TOLERANCE_DEG,
-                    downward: bool = False, rpy=None,
+                    downward: bool = False, rpy=None, rotation=None,
                     follow_yaw: bool = False, local_only: bool = False) -> dict[str, float]:
         """Solve the five arm joints so the tool point reaches target xyz.
 
         The tool point is `ee_tool_offset` along gripper_frame_link +Z. `rpy` is
-        base-frame XYZ Euler degrees, the angles a pose reports; omit it to keep
-        roll and pitch, with yaw following the pan. `downward` constrains the
-        finger axis (+X) to the cone below the base and leaves the twist about
-        that axis free. A fixed rpy pitch of 90 is not a substitute: it pins the
-        twist as well, and no exact pose fits near the workspace edge.
+        base-frame XYZ Euler degrees, the angles a pose reports; `rotation` is
+        the same goal as a 3x3 matrix, which near pitch ±90 is the only form
+        with one value. Omit both to keep roll and pitch, with yaw following the
+        pan. `downward` constrains the finger axis (+X) to the cone below the
+        base and leaves the twist about that axis free. A fixed rpy pitch of 90
+        is not a substitute: it pins the twist as well, and no exact pose fits
+        near the workspace edge.
 
-        `follow_yaw` gives an rpy goal the same freedom a bare point has: roll and
-        pitch are pinned, and world-Z rotation follows the pan, which a five-joint
-        arm can do without giving up the point. Such a goal is solved with damped
-        least squares, so the tool point does not move while the tool turns.
+        `follow_yaw` gives an orientation goal the same freedom a bare point has:
+        roll and pitch are pinned, and world-Z rotation follows the pan, which a
+        five-joint arm can do without giving up the point. Such a goal is solved
+        with damped least squares, so the tool point does not move while the tool
+        turns. A turn still has to meet the whole orientation: `tolerance_deg`
+        is checked on all three axes, so a missed press is refused, not absorbed.
         `local_only` refuses the full-limit search, so a blocked step raises
         instead of jumping to another arm branch.
 
         The first attempt stays within `NEAR_STEP_DEG` of `state` so a 5 mm step
-        does not spin a joint; an rpy goal gets a wider window because holding
-        the point while turning needs more wrist travel. A point outside that
-        window, or an orientation off by more than `NEAR_ORIENTATION_DEG`, is
-        solved again on the full limits unless `local_only` is set.
+        does not spin a joint; an orientation goal gets a wider window because
+        holding the point while turning needs more wrist travel. A point outside
+        that window, or an orientation off by more than `NEAR_ORIENTATION_DEG`,
+        is solved again on the full limits unless `local_only` is set.
         """
         goal = np.asarray(target, dtype=float)
         if goal.shape != (3,) or not np.isfinite(goal).all():
@@ -685,14 +634,20 @@ class Kinematics:
         reach = self._path_length + abs(self.ee_tool_offset)
         if float(np.linalg.norm(goal)) > reach + 1e-9:
             raise ValueError(f"IK target is outside the arm's reach ({reach:.3f} m)")
-        if downward and rpy is not None:
-            raise ValueError("downward replaces an rpy target")
+        if downward and (rpy is not None or rotation is not None):
+            raise ValueError("downward replaces an orientation target")
+        if rpy is not None and rotation is not None:
+            raise ValueError("Pass rpy or rotation, not both")
         goal_rotation = None
         if rpy is not None:
             angles = np.asarray(rpy, dtype=float)
             if angles.shape != (3,) or not np.isfinite(angles).all():
                 raise ValueError("Invalid RPY target")
             goal_rotation = gripper_rotation_from_rpy(angles)
+        elif rotation is not None:
+            goal_rotation = np.asarray(rotation, dtype=float)
+            if goal_rotation.shape != (3, 3) or not np.isfinite(goal_rotation).all():
+                raise ValueError("Invalid rotation target")
         if set(limits) != set(JOINTS):
             raise ValueError("Limits required for all arm joints")
         lower = np.array([limits[name][0] for name in JOINTS], dtype=float)
@@ -705,13 +660,13 @@ class Kinematics:
 
         keep_rotation = self.fk(dict(zip(JOINTS, initial)))[:3, :3]
         if downward:
-            rotation = _fingers_down(keep_rotation)
+            orientation = _fingers_down(keep_rotation)
         elif goal_rotation is not None:
-            rotation = goal_rotation
+            orientation = goal_rotation
         else:
-            rotation = keep_rotation
-        # An rpy or downward goal owns the orientation. A bare point only prefers it,
-        # so a far target can still be reached.
+            orientation = keep_rotation
+        # An rpy, rotation, or downward goal owns the orientation. A bare point
+        # only prefers it, so a far target can still be reached.
         allow_position_only = goal_rotation is None and not downward
         # A bare point keeps roll and pitch but lets yaw track the pan, which is
         # what makes a sideways step reachable on this arm. A turn with
@@ -719,20 +674,14 @@ class Kinematics:
         follow = (goal_rotation is None or follow_yaw) and not downward
         yaw_free = follow and float(np.hypot(goal[0], goal[1])) >= _YAW_RADIUS_M
 
-        def orientation_error_deg(solution: _Solution) -> float:
-            if yaw_free:
-                # World-Z rotation is the direction a five-joint arm cannot hold
-                # while the pan carries the tool; match the tilt the caller asked for.
-                error = _rotvec(goal_rotation @ solution.rotation.T)
-                error[2] = 0.0
-                return float(np.rad2deg(np.linalg.norm(error)))
+        def full_error_deg(solution: _Solution) -> float:
             return float(np.rad2deg(np.linalg.norm(
-                _rotvec(goal_rotation.T @ solution.rotation))))
+                _rotvec(goal_rotation @ solution.rotation.T))))
 
         def goal_met(solution: _Solution) -> bool:
             if solution.position_error > tolerance_m:
                 return False
-            if goal_rotation is not None and orientation_error_deg(solution) > tolerance_deg:
+            if goal_rotation is not None and full_error_deg(solution) > tolerance_deg:
                 return False
             if downward and solution.rotation[2, 0] >= DOWNWARD_Z:
                 return False
@@ -741,10 +690,10 @@ class Kinematics:
         def solve(seed_angles, low, high):
             if yaw_free:
                 return self._pan_following(
-                    seed_angles, low, high, goal, rotation, tolerance_m,
+                    seed_angles, low, high, goal, orientation, tolerance_m,
                     allow_position_only=allow_position_only)
             return self._attempt(
-                seed_angles, low, high, goal, rotation, tolerance_m,
+                seed_angles, low, high, goal, orientation, tolerance_m,
                 allow_position_only=allow_position_only)
 
         near_step = NEAR_ORIENTATION_STEP_DEG if goal_rotation is not None else NEAR_STEP_DEG
@@ -753,13 +702,20 @@ class Kinematics:
         solved = None
         if np.all(near_lower < near_upper):
             if follow_yaw and follow:
-                solved = self._turn_ik(
-                    initial, goal, rotation, near_lower, near_upper, tolerance_m,
-                    free_yaw=yaw_free)
+                # A turn owns the whole tool frame, world-Z included. At the
+                # vertical singularity roll is world-Z, so a yaw-free solve would
+                # swallow the press; accepting a wider error would let a missed
+                # turn move the arm a little without turning it.
+                solved = self._inverse(
+                    initial, near_lower, near_upper, goal, orientation,
+                    tolerance_m, lock_orientation=True)
+                if (solved.position_error > min(tolerance_m, TURN_TOLERANCE_M)
+                        or full_error_deg(solved) > tolerance_deg):
+                    solved = None
             else:
                 near = solve(initial, near_lower, near_upper)
                 orientation_fits = (goal_rotation is None
-                                    or orientation_error_deg(near) <= NEAR_ORIENTATION_DEG)
+                                    or full_error_deg(near) <= NEAR_ORIENTATION_DEG)
                 if orientation_fits and goal_met(near):
                     solved = near
         if solved is None and local_only:
@@ -773,7 +729,7 @@ class Kinematics:
                 candidate = solve(seed_angles, lower, upper)
                 if position_first and not goal_met(candidate):
                     guess = self._inverse(
-                        seed_angles, lower, upper, goal, rotation, tolerance_m,
+                        seed_angles, lower, upper, goal, orientation, tolerance_m,
                         lock_orientation=False)
                     alt = solve(guess.angles, lower, upper)
                     if goal_met(alt) or alt.position_error < candidate.position_error:

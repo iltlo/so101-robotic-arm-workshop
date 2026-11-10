@@ -54,7 +54,7 @@ Connect the arm and the camera. The default camera is the reCamera at `ws://192.
 
 ## Tasks
 
-**Teleop** uses the keyboard or the on-screen keypad. WASD or the arrows move x and y. Q/E move z and keep the current orientation. Z/C change base roll, F/V change base pitch, R rests, H homes, and space toggles the gripper. Keys follow the Teleop tab. **Key teleop** in the top bar keeps them on across tabs.
+**Teleop** uses the keyboard or the on-screen keypad. WASD or the arrows move x and y. Q/E move z and keep the current orientation. Z/C turn the gripper about its fingers, F/V tilt the fingers up and down about the arm's wrist axis, R rests, H homes, and space toggles the gripper. Keys follow the Teleop tab. **Key teleop** in the top bar keeps them on across tabs.
 
 **Click and go** treats a click as a ray onto the base plane z = 0, then moves the gripper there, 20 mm above the plane.
 

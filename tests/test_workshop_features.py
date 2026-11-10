@@ -237,6 +237,28 @@ def test_estop_forgets_the_teleop_target_and_last_command(client):
     assert agent.arm._sent is None
     assert agent.arm._goal is None
 
+
+def test_moving_outside_teleop_forgets_its_target(client):
+    """A jog or a click moves the arm; the next pitch key must not pivot about
+    the point and frame cached before it."""
+    agent = _connect(client)
+    _attach_camera(agent)
+    client.post("/api/teleop", json={"action": "tap", "token": "h"})
+    pixel_x, pixel_y, _ = _reachable_pixel(agent, HOVER_M)
+    agent.arm.set_speed(30)
+
+    assert client.post("/api/teleop", json={"action": "tap", "token": "w"}).status_code == 200
+    assert agent.teleop._command is not None
+    assert client.post(
+        "/api/jog", json={"name": "shoulder_pan", "delta_deg": 1}).status_code == 200
+    assert agent.teleop._command is None
+
+    assert client.post("/api/teleop", json={"action": "tap", "token": "w"}).status_code == 200
+    assert agent.teleop._command is not None
+    clicked = client.post("/api/click", json={"x": pixel_x, "y": pixel_y})
+    assert clicked.status_code == 200, clicked.text
+    assert agent.teleop._command is None
+
     assert client.post("/api/hold").status_code == 200
     assert agent.teleop._command is None
     assert agent.arm._sent is None
