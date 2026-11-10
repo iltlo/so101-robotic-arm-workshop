@@ -27,10 +27,12 @@ from so101_utils.views import Twin
 GRPC_PORT = 9881
 WEB_PORT = 9091
 PORT_SCAN = 20
-# The stream is live-only: the viewer keeps a short rolling buffer for a
-# late-joining page, then drops the oldest frames. Nothing is written to disk.
-VIEWER_MEMORY_LIMIT = "256MB"
-SERVER_MEMORY_LIMIT = "64MB"
+# Live only: old frames are dropped, nothing is written to disk. The cap has to
+# hold the static arm meshes plus recent camera frames. A few dozen megabytes
+# is not enough; the server then discards the meshes and the plot history, and
+# the panel shows a speck and empty charts.
+VIEWER_MEMORY_LIMIT = "1GB"
+SERVER_MEMORY_LIMIT = "512MB"
 
 # Every viewer spawned here, even ones whose handshake never finished.
 # `stop_all` uses this at shutdown so a stalled start cannot leave a viewer
@@ -369,8 +371,10 @@ def open_viewer(urdf, intrinsics) -> WorkshopViewer:
         raise
     # localhost often resolves to IPv6, and this server is bound to 127.0.0.1.
     # persist would restore the welcome screen instead of this recording.
+    # WebGPU draws a black 3D view and blank plots on current macOS browsers.
+    # The web viewer falls back to WebGL when this is set.
     url = (
         f"{web_origin}/?url={quote(uri, safe='')}"
-        "&persist=false&hide_welcome_screen"
+        "&persist=false&hide_welcome_screen&renderer=webgl"
     )
     return WorkshopViewer(twin, url, process, grpc_port)

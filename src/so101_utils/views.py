@@ -65,7 +65,15 @@ def _pinhole_entity(rr, intrinsics):
 def _log_rgb(rr, image_bgr) -> None:
     import cv2
 
-    rr.log(_CAMERA, rr.Image(cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)))
+    # A raw 1280×720 frame is about 3 MB. JPEG keeps the live camera from
+    # pushing the arm meshes and the plot history out of the viewer.
+    ok, encoded = cv2.imencode(
+        ".jpg", image_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 80],
+    )
+    if not ok:
+        rr.log(_CAMERA, rr.Image(cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)))
+        return
+    rr.log(_CAMERA, rr.EncodedImage(contents=bytes(encoded), media_type="image/jpeg"))
 
 
 def _flush(rr) -> None:
@@ -110,7 +118,12 @@ def _arm_blueprint(rrb, root, *, intrinsics):
     if intrinsics is None:
         layout = rrb.Horizontal(arm_view, rrb.Vertical(joint_plot, pose_plots))
     else:
-        camera = rrb.Spatial2DView(name="Camera", origin=_CAMERA)
+        camera = rrb.Spatial2DView(
+            name="Camera", origin=_CAMERA,
+            background=rrb.Background(
+                kind=rrb.BackgroundKind.SolidColor, color=(24, 24, 24, 255),
+            ),
+        )
         layout = rrb.Horizontal(
             rrb.Vertical(arm_view, joint_plot),
             rrb.Vertical(camera, pose_plots),

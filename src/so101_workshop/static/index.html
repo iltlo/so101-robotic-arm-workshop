@@ -2029,6 +2029,8 @@
     if (target) page.searchParams.set("url", target.replace("://localhost", "://127.0.0.1"));
     page.searchParams.set("persist", "false");
     page.searchParams.set("hide_welcome_screen", "");
+    // WebGPU leaves the 3D view and the plots blank on current macOS browsers.
+    page.searchParams.set("renderer", "webgl");
     // A restarted server reuses the same ports. Tie the iframe URL to the
     // viewer instance so the page does not keep showing the previous run.
     if (generation) page.searchParams.set("reload", generation);
