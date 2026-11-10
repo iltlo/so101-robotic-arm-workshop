@@ -9,7 +9,7 @@ need it.
 """
 
 from collections import deque
-from threading import Lock
+from threading import Event, Lock
 import time
 
 from so101_control.arm import SO101
@@ -17,6 +17,8 @@ from so101_control.kinematics import IKError
 from so101_utils.model import nod_gripper, pitch_axis, tool_rpy
 
 _MOVES = {"w", "a", "s", "d", "q", "e", "z", "c", "f", "v"}
+# A later one of these replaces a move that has not started, and stops one that has.
+_INTERRUPTING = _MOVES | {"h", "r"}
 # Same as the arm default.
 TELEOP_SPEED_DEG_S = 90.0
 # Metres per translation key press, and the range the +/- keys step through.
@@ -49,11 +51,17 @@ class Teleop:
         self._lock = Lock()
         self._held: set[str] = set()
         self._queue: deque[str] = deque()
+        self._active: str | None = None
+        # Set from the key thread so a trajectory already on the worker stops.
+        self._interrupt = Event()
 
-    def _halted(self) -> bool:
+    def _estopped(self) -> bool:
         if not self.running:
             return True
         return self._cancel is not None and bool(self._cancel())
+
+    def _halted(self) -> bool:
+        return self._estopped() or self._interrupt.is_set()
 
     def _token(self, key):
         if isinstance(key, str):
@@ -85,11 +93,13 @@ class Teleop:
             return
         if not token:
             return
+        self._note(token)
+
+    def pending(self, token: str) -> bool:
+        """True when `token` is still the command a tap should run."""
+        token = _ARROWS.get(token, token)
         with self._lock:
-            if token in self._held:
-                return
-            self._held.add(token)
-            self._queue.append(token)
+            return token in self._queue
 
     def release_token(self, token: str) -> None:
         token = _ARROWS.get(token, token)
@@ -103,9 +113,28 @@ class Teleop:
         with self._lock:
             self._held.clear()
             self._queue.clear()
+            self._active = None
+            self._interrupt.clear()
             self._command = None
             self._turn_point = None
             self._turn_rotation = None
+
+    def _note(self, token: str) -> None:
+        """Keep the latest motion, home, or rest. A repeat of the one running is ignored."""
+        with self._lock:
+            repeating = token in self._held
+            if not repeating:
+                self._held.add(token)
+            if token not in _INTERRUPTING:
+                if repeating:
+                    return
+                self._queue.append(token)
+                return
+            if repeating or (self._active == token and token not in self._queue):
+                return
+            self._queue.clear()
+            self._interrupt.set()
+            self._queue.append(token)
 
     def on_press(self, key):
         # Listener thread: record the key and return. A motor call here blocks
@@ -116,11 +145,7 @@ class Teleop:
             return False
         if token is None:
             return
-        with self._lock:
-            if token in self._held:
-                return
-            self._held.add(token)
-            self._queue.append(token)
+        self._note(token)
 
     def on_release(self, key):
         token = self._token(key)
@@ -131,15 +156,25 @@ class Teleop:
 
     def poll(self) -> None:
         """Apply one queued key, or one step for the keys still held."""
-        if self._halted():
+        if self._estopped():
             return
         with self._lock:
             token = self._queue.popleft() if self._queue else None
             held = set(self._held)
+            if token is not None:
+                self._active = token
+                self._interrupt.clear()
         if token is not None:
-            if not self._apply(token):
+            try:
+                if not self._apply(token):
+                    with self._lock:
+                        self._queue.appendleft(token)
+            finally:
                 with self._lock:
-                    self._queue.appendleft(token)
+                    if self._active == token:
+                        self._active = None
+            return
+        if self._interrupt.is_set():
             return
         dx, dy, dz, dr, dp = self._delta(held)
         if dx == dy == dz == dr == dp == 0.0:
@@ -238,10 +273,7 @@ class Teleop:
 
     def _spin_wrist(self, dr: float) -> bool:
         try:
-            kwargs = {}
-            if self._cancel is not None:
-                kwargs["cancel"] = self._halted
-            arrived = self.arm.spin_wrist(dr, **kwargs)
+            arrived = self.arm.spin_wrist(dr, cancel=self._halted)
         except (ValueError, RuntimeError) as exc:
             self._say(str(exc))
             time.sleep(ERROR_S)
@@ -297,9 +329,7 @@ class Teleop:
         try:
             # No settle wait: a live joint often stops short of the 2° band.
             # A nudge is one goal, not a ramp the user waits through.
-            kwargs = {"wait": False, "single_goal": True}
-            if self._cancel is not None:
-                kwargs["cancel"] = self._halted
+            kwargs = {"wait": False, "single_goal": True, "cancel": self._halted}
             if turning:
                 result = self._turn((x, y, z), rotation, dp, axis, **kwargs)
                 if result is None:

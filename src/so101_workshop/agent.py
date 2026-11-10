@@ -438,16 +438,20 @@ class Agent:
     def tap(self, token: str):
         self._require_motion()
         token = str(token)
+        # Record the key before waiting for the worker, so a home or nudge
+        # already running sees it and stops for this one.
+        self.teleop.press_token(token)
 
         def job():
             self._require_motion()
-            self.teleop.press_token(token)
             self.teleop.release_token(token)
+            if not self.teleop.pending(token):
+                return self.message
             self.teleop.poll()
             if token == "h":
-                self.message = "Home queued"
+                self.message = "Home"
             elif token == "r":
-                self.message = "Rest queued"
+                self.message = "Rest"
             elif token == "space":
                 self.message = "Gripper closed" if self.teleop.closed else "Gripper open"
             elif token in {"+", "="}:

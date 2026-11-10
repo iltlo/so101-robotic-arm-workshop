@@ -11,8 +11,6 @@ from so101_utils.model import (
     GRIPPER_CLOSED_PERCENT,
     GRIPPER_OPEN_PERCENT,
     JOINTS,
-    canonical_quaternion,
-    tool_pitch,
     tool_rpy,
 )
 from so101_utils.tags import Tag, draw_error, draw_tag_overlay, find_tag, tag_detector
@@ -108,8 +106,6 @@ def _arm_blueprint(rrb, root, *, intrinsics):
     pose_plots = rrb.Horizontal(
         _plot(rrb, "EE XYZ (m)", "/telemetry/ee/xyz"),
         _plot(rrb, "EE RPY (deg)", "/telemetry/ee/rpy"),
-        _plot(rrb, "EE tool pitch (deg)", "/telemetry/ee/tool_pitch"),
-        _plot(rrb, "EE quaternion", "/telemetry/ee/quat"),
     )
     if intrinsics is None:
         layout = rrb.Horizontal(arm_view, rrb.Vertical(joint_plot, pose_plots))
@@ -263,8 +259,6 @@ class Twin:
             for group, names, values in (
                 ("xyz", ("x_m", "y_m", "z_m"), xyz),
                 ("rpy", ("roll_deg", "pitch_deg", "yaw_deg"), rpy),
-                ("tool_pitch", ("deg",), (tool_pitch(pose[:3, :3]),)),
-                ("quat", ("w", "x", "y", "z"), canonical_quaternion(pose[:3, :3])),
             ):
                 for name, value in zip(names, values):
                     self.rr.log(f"telemetry/ee/{group}/{name}", self.rr.Scalars(float(value)))

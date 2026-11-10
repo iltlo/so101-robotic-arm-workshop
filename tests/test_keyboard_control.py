@@ -101,10 +101,10 @@ def test_wasd_presses_apply_without_waiting_for_settle():
     key = module.keyboard.KeyCode.from_char
     teleop.on_press(key("w"))
     teleop.on_release(key("w"))
-    teleop.on_press(key("a"))
-    teleop.on_release(key("a"))
     assert arm.calls == []
     teleop.poll()
+    teleop.on_press(key("a"))
+    teleop.on_release(key("a"))
     teleop.poll()
     assert arm.calls[0][0] == pytest.approx(0.2 + teleop.step)
     assert arm.calls[0][1] == pytest.approx(0.0)
@@ -254,6 +254,60 @@ def test_z_and_c_spin_the_gripper_when_a_pose_solve_cannot():
     teleop.poll()
     assert arm.spins == pytest.approx([teleop.roll_step, -teleop.roll_step])
     assert arm.calls == []
+
+
+def test_a_new_key_replaces_one_that_has_not_run():
+    module = _load()
+    arm = _Arm()
+    teleop = module.Teleop(arm)
+    key = module.keyboard.KeyCode.from_char
+    teleop.on_press(key("f"))
+    teleop.on_release(key("f"))
+    teleop.on_press(key("w"))
+    teleop.on_release(key("w"))
+    teleop.poll()
+    teleop.poll()
+    assert len(arm.calls) == 1
+    assert arm.calls[0][0] == pytest.approx(0.2 + teleop.step)
+    assert arm.calls[0][1] == pytest.approx(0.0)
+
+
+def test_only_the_latest_home_or_rest_runs():
+    module = _load()
+    arm = _Arm()
+    teleop = module.Teleop(arm)
+    key = module.keyboard.KeyCode.from_char
+    teleop.on_press(key("h"))
+    teleop.on_release(key("h"))
+    teleop.on_press(key("r"))
+    teleop.on_release(key("r"))
+    teleop.on_press(key("h"))
+    teleop.on_release(key("h"))
+    teleop.poll()
+    teleop.poll()
+    assert arm.homes == [(False, False)]
+    assert arm.rests == []
+
+
+def test_rest_cuts_off_a_home_that_is_already_moving():
+    module = _load()
+    arm = _Arm()
+    teleop = module.Teleop(arm)
+    seen = []
+
+    def home(*, wait=True, cancel=None):
+        teleop.press_token("r")
+        seen.append(bool(cancel and cancel()))
+        return not seen[-1]
+
+    arm.home = home
+    teleop.press_token("h")
+    teleop.release_token("h")
+    teleop.poll()
+    assert seen == [True]
+    assert arm.rests == []
+    teleop.poll()
+    assert arm.rests == [(False, False)]
 
 
 def test_home_does_not_wait_for_settle():
