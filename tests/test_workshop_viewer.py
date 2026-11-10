@@ -77,6 +77,9 @@ def test_viewer_command_bounds_memory():
     command = viewer._viewer_command("rerun", 9881, 9091, "http://127.0.0.1:9091")
     assert command[command.index("--memory-limit") + 1] == viewer.VIEWER_MEMORY_LIMIT
     assert command[command.index("--server-memory-limit") + 1] == viewer.SERVER_MEMORY_LIMIT
+    # 0.26 rejects these. Passing them makes the Intel Mac viewer exit immediately.
+    assert "--headless" not in command
+    assert "--cors-allow-origin" not in command
 
 
 def test_viewer_is_dead_when_its_grpc_port_closes():

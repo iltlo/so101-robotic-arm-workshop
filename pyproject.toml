@@ -21,7 +21,9 @@ dependencies = [
     "paho-mqtt>=2.1",
     "pupil-apriltags>=1.0.4; python_version < '3.14'",
     "websockets>=13",
-    "rerun-sdk>=0.33,<0.34",
+    # 0.27+ publishes no Intel macOS wheel. 0.26.2 still has Intel Mac,
+    # Apple silicon, Linux, and Windows wheels.
+    "rerun-sdk>=0.26.2,<0.27",
 ]
 
 [project.scripts]

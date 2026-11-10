@@ -303,16 +303,19 @@ def _pick_ports() -> tuple[int, int]:
 
 
 def _viewer_command(binary: str, grpc_port: int, web_port: int, web_origin: str) -> list[str]:
+    # 0.26 is the last Rerun with an Intel Mac wheel. It has no --headless and
+    # no --cors-allow-origin; --serve-web is the browser panel, and that build
+    # already allows the page to connect across ports. web_origin is the page
+    # the workshop iframe is served from; 0.26 does not take it as a flag.
+    del web_origin
     return [
-        binary, "--headless", "--serve-web",
+        binary, "--serve-web",
         "--bind", "127.0.0.1",
         "--port", str(grpc_port),
         "--web-viewer-port", str(web_port),
         "--memory-limit", VIEWER_MEMORY_LIMIT,
         "--server-memory-limit", SERVER_MEMORY_LIMIT,
         "--hide-welcome-screen",
-        "--cors-allow-origin", web_origin,
-        "--cors-allow-origin", f"http://localhost:{web_port}",
     ]
 
 
