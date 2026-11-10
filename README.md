@@ -10,20 +10,20 @@ macOS and Linux:
 
 ```sh
 curl -LsSf https://astral.sh/uv/install.sh | sh
-uvx so101-workshop@latest run
+uvx --python 3.13 so101-workshop@latest run
 ```
 
 Windows PowerShell. Use native Windows so the reCamera USB gadget at `192.168.42.1` is visible:
 
 ```powershell
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-uvx so101-workshop@latest run
+uvx --python 3.13 so101-workshop@latest run
 ```
 
 From a checkout of this repository:
 
 ```sh
-uvx --from . so101-workshop run
+uvx --python 3.13 --from . so101-workshop run
 ```
 
 `--mock` runs the page without an arm. `--no-viewer` skips the Rerun panel.
@@ -34,7 +34,7 @@ The page is split into **Hardware** (arm, camera, USB port, motor calibration), 
 - Windows: serial ports are `COM*`.
 - macOS: the arm is `/dev/cu.usbmodem*`.
 
-Requires Python 3.12 or 3.13. On macOS, AprilTags provides a wheel for Apple silicon only.
+Python 3.13. Without `--python 3.13`, `uvx` uses whatever `python` is on your PATH. Python 3.14 can open the page, but AprilTags has no wheel for it, so hand-eye does not run. On macOS, the AprilTags wheel is Apple silicon only.
 
 ## Safety
 
@@ -84,7 +84,7 @@ Switch camera under **Hardware → Camera connection**. Intrinsics belong to tha
 | `camera_logi.yaml` | `webcamera` | USB webcam, index 0 |
 | `camera_usbcam.yaml` | `webcamera` | Second USB webcam. Set `device` if that index is not this machine's camera |
 
-RealSense needs the vision extra: `uvx --with pyrealsense2 so101-workshop run`.
+RealSense needs the vision extra: `uvx --python 3.13 --with pyrealsense2 so101-workshop run`.
 
 `joint_limits_deg` and `joint_offsets_deg` in `robot.yaml` are this arm's limits and small zero corrections. Edit the offsets only if you re-measure them.
 
@@ -93,7 +93,7 @@ RealSense needs the vision extra: `uvx --with pyrealsense2 so101-workshop run`.
 From a checkout, the same work is available as scripts. `--mock` draws the arm in Rerun and does not open the serial port. `--live` uses the arm. Clear the table first.
 
 ```sh
-uv sync --locked --all-extras
+uv sync --python 3.13 --locked --all-extras
 ```
 
 The pinned URDF and meshes are already in `assets/SO101/`, and the package ships them, so there is nothing to fetch. `scripts/fetch_so101_assets.py` only refreshes them when the pinned upstream commit changes.

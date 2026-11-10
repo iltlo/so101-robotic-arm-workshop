@@ -24,8 +24,13 @@ _FONT_THICKNESS = 2
 
 def tag_detector(tag: Tag):
     """pupil_apriltags detector for `tag.family`."""
-    from pupil_apriltags import Detector
-
+    try:
+        from pupil_apriltags import Detector
+    except ImportError as exc:
+        raise RuntimeError(
+            "AprilTags has no wheel for this Python. "
+            "Start with: uvx --python 3.13 so101-workshop@latest run"
+        ) from exc
     return Detector(families=tag.family)
 
 
