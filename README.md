@@ -36,6 +36,8 @@ The page is split into **Hardware** (arm, camera, USB port, motor calibration), 
 
 Python 3.13. Without `--python 3.13`, `uvx` uses whatever `python` is on your PATH. Python 3.14 can open the page, but AprilTags has no wheel for it, so hand-eye does not run. On macOS, the AprilTags wheel is Apple silicon only.
 
+The arm panel uses Rerun 0.26.2. Later Rerun releases have no Intel Mac wheel, so this is the version that installs on Intel macOS, Apple silicon, Linux, and Windows.
+
 ## Safety
 
 Clear the table before any live motion. Joint speed defaults to 90 deg/s, which is the maximum. Change it with `arm.set_speed(...)`. Torque off lets the arm fall: support it, and keep a power cutoff within reach. Ctrl-C and the keyboard are not emergency stops. There is no collision checker.

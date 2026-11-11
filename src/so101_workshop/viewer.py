@@ -27,10 +27,12 @@ from so101_utils.views import Twin
 GRPC_PORT = 9881
 WEB_PORT = 9091
 PORT_SCAN = 20
-# The stream is live-only: the viewer keeps a short rolling buffer for a
-# late-joining page, then drops the oldest frames. Nothing is written to disk.
-VIEWER_MEMORY_LIMIT = "256MB"
-SERVER_MEMORY_LIMIT = "64MB"
+# Live only: old frames are dropped, nothing is written to disk. The cap has to
+# hold the static arm meshes plus recent camera frames. A few dozen megabytes
+# is not enough; the server then discards the meshes and the plot history, and
+# the panel shows a speck and empty charts.
+VIEWER_MEMORY_LIMIT = "1GB"
+SERVER_MEMORY_LIMIT = "512MB"
 
 # Every viewer spawned here, even ones whose handshake never finished.
 # `stop_all` uses this at shutdown so a stalled start cannot leave a viewer
@@ -301,16 +303,19 @@ def _pick_ports() -> tuple[int, int]:
 
 
 def _viewer_command(binary: str, grpc_port: int, web_port: int, web_origin: str) -> list[str]:
+    # 0.26 is the last Rerun with an Intel Mac wheel. It has no --headless and
+    # no --cors-allow-origin; --serve-web is the browser panel, and that build
+    # already allows the page to connect across ports. web_origin is the page
+    # the workshop iframe is served from; 0.26 does not take it as a flag.
+    del web_origin
     return [
-        binary, "--headless", "--serve-web",
+        binary, "--serve-web",
         "--bind", "127.0.0.1",
         "--port", str(grpc_port),
         "--web-viewer-port", str(web_port),
         "--memory-limit", VIEWER_MEMORY_LIMIT,
         "--server-memory-limit", SERVER_MEMORY_LIMIT,
         "--hide-welcome-screen",
-        "--cors-allow-origin", web_origin,
-        "--cors-allow-origin", f"http://localhost:{web_port}",
     ]
 
 
@@ -369,8 +374,10 @@ def open_viewer(urdf, intrinsics) -> WorkshopViewer:
         raise
     # localhost often resolves to IPv6, and this server is bound to 127.0.0.1.
     # persist would restore the welcome screen instead of this recording.
+    # WebGPU draws a black 3D view and blank plots on current macOS browsers.
+    # The web viewer falls back to WebGL when this is set.
     url = (
         f"{web_origin}/?url={quote(uri, safe='')}"
-        "&persist=false&hide_welcome_screen"
+        "&persist=false&hide_welcome_screen&renderer=webgl"
     )
     return WorkshopViewer(twin, url, process, grpc_port)

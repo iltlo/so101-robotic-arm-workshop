@@ -14,6 +14,7 @@ from so101_utils.model import (
     tool_rpy,
 )
 from so101_utils.tags import Tag, draw_error, draw_tag_overlay, find_tag, tag_detector
+from so101_utils.urdf_view import UrdfScene
 
 _JOINT_COLORS = ((255, 94, 111), (255, 188, 92), (91, 197, 233),
                  (169, 130, 255), (79, 207, 148))
@@ -65,7 +66,15 @@ def _pinhole_entity(rr, intrinsics):
 def _log_rgb(rr, image_bgr) -> None:
     import cv2
 
-    rr.log(_CAMERA, rr.Image(cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)))
+    # A raw 1280×720 frame is about 3 MB. JPEG keeps the live camera from
+    # pushing the arm meshes and the plot history out of the viewer.
+    ok, encoded = cv2.imencode(
+        ".jpg", image_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 80],
+    )
+    if not ok:
+        rr.log(_CAMERA, rr.Image(cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)))
+        return
+    rr.log(_CAMERA, rr.EncodedImage(contents=bytes(encoded), media_type="image/jpeg"))
 
 
 def _flush(rr) -> None:
@@ -96,8 +105,7 @@ def _arm_blueprint(rrb, root, *, intrinsics):
     """3D arm and joint angles left; camera and EE poses right."""
     arm_view = rrb.Spatial3DView(
         name="SO-101", origin=root,
-        contents=[f"{root}/**", "/tf_static", "/transforms/**"],
-        overrides={f"{root}/collision_geometries": rrb.EntityBehavior(visible=False)},
+        contents=[f"{root}/**"],
         background=rrb.Background(
             kind=rrb.BackgroundKind.SolidColor, color=(24, 24, 24, 255),
         ),
@@ -110,7 +118,12 @@ def _arm_blueprint(rrb, root, *, intrinsics):
     if intrinsics is None:
         layout = rrb.Horizontal(arm_view, rrb.Vertical(joint_plot, pose_plots))
     else:
-        camera = rrb.Spatial2DView(name="Camera", origin=_CAMERA)
+        camera = rrb.Spatial2DView(
+            name="Camera", origin=_CAMERA,
+            background=rrb.Background(
+                kind=rrb.BackgroundKind.SolidColor, color=(24, 24, 24, 255),
+            ),
+        )
         layout = rrb.Horizontal(
             rrb.Vertical(arm_view, joint_plot),
             rrb.Vertical(camera, pose_plots),
@@ -131,7 +144,7 @@ class Twin:
             raise ValueError("Twin requires the downloaded so101_new_calib.urdf")
         self.rr = rr
         self.intrinsics = intrinsics
-        self.tree = rr.urdf.UrdfTree.from_file_path(path)
+        self.tree = UrdfScene.from_file_path(path)
         self.joints = {name: self.tree.get_joint_by_name(name) for name in JOINTS}
         if any(joint is None or joint.joint_type != "revolute" for joint in self.joints.values()):
             raise ValueError("Follower URDF missing an arm revolute joint")
@@ -147,14 +160,12 @@ class Twin:
         if recording is not None:
             rr.save(recording)
 
-        self.tree.log_urdf_to_recording()
+        self.tree.log_to_recording(rr)
         rr.get_global_data_recording().flush()
+        # The scene root is the base frame. Arrow geometry is already in base
+        # metres, so it sits next to base_link without a further transform.
         robot_root = f"/{self.tree.name}"
         rr.log(robot_root, rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
-        # FK / goal geometry is already expressed in base_link metres. Pin those
-        # entities to that frame so the view does not look for a missing TF path.
-        for entity in ("fk_ee_axes", "ee_tool", "ee_tool_line", "ee_tool_axes", "hover_goal"):
-            rr.log(f"{robot_root}/{entity}", rr.CoordinateFrame("base_link"), static=True)
 
         for name, color in zip(JOINTS, _JOINT_COLORS):
             rr.log(f"telemetry/joints/{name}", rr.SeriesLines(names=name, colors=color), static=True)
@@ -218,7 +229,7 @@ class Twin:
             angle = float(state[name])
             if not np.isfinite(angle):
                 raise ValueError(f"Invalid joint feedback {name}")
-            self.rr.log(f"transforms/{name}", joint.compute_transform(float(np.deg2rad(angle)), clamp=False))
+            self.rr.log(joint.entity, joint.compute_transform(float(np.deg2rad(angle)), clamp=False))
             self.rr.log(f"telemetry/joints/{name}", self.rr.Scalars(angle))
 
         # 0 is closed and 100 is open. The URDF has no servo-to-jaw map, so the
@@ -230,7 +241,7 @@ class Twin:
             gripper, [GRIPPER_CLOSED_PERCENT, GRIPPER_OPEN_PERCENT],
             [self.jaw.limit_lower, self.jaw.limit_upper],
         ))
-        self.rr.log("transforms/gripper", self.jaw.compute_transform(jaw_angle, clamp=True))
+        self.rr.log(self.jaw.entity, self.jaw.compute_transform(jaw_angle, clamp=True))
 
         if ee_pose is not None:
             pose = np.asarray(ee_pose, dtype=float)
@@ -341,9 +352,8 @@ def log_hand_eye(twin, image_bgr, arm, tag, base_T_camera=None, detector=None):
     rr.log(f"{root}/gripper_link_axes",
            _frame_arrows(rr, base_T_gripper, "link", length=_LINK_AXIS_M))
     mount = tag.gripper_T_tag
-    rr.log("transforms/tag_mount", rr.Transform3D(
-        translation=mount[:3, 3], mat3x3=mount[:3, :3],
-        parent_frame="gripper_link", child_frame="tag_mount"))
+    rr.log(f"{twin.tree.link_entity('gripper_link')}/tag_mount", rr.Transform3D(
+        translation=mount[:3, 3], mat3x3=mount[:3, :3]))
     image = np.ascontiguousarray(image_bgr).copy()
     try:
         camera_T_tag, corners = find_tag(image, twin.intrinsics, tag, detector=detector)
@@ -354,19 +364,17 @@ def log_hand_eye(twin, image_bgr, arm, tag, base_T_camera=None, detector=None):
         draw_tag_overlay(image, corners, tag)
         if base_T_camera is not None:
             seen = base_T_camera @ camera_T_tag
-            rr.log("transforms/camera_tag", rr.Transform3D(
-                translation=seen[:3, 3], mat3x3=seen[:3, :3],
-                parent_frame="base_link", child_frame="camera_tag"))
+            base = twin.tree.link_entity("base_link")
+            rr.log(f"{base}/camera_tag", rr.Transform3D(
+                translation=seen[:3, 3], mat3x3=seen[:3, :3]))
     if base_T_camera is not None:
-        rr.log("transforms/station_camera", rr.Transform3D(
-            translation=base_T_camera[:3, 3], mat3x3=base_T_camera[:3, :3],
-            parent_frame="base_link", child_frame="station_camera"))
+        base = twin.tree.link_entity("base_link")
+        rr.log(f"{base}/station_camera", rr.Transform3D(
+            translation=base_T_camera[:3, 3], mat3x3=base_T_camera[:3, :3]))
         rr.log(f"{root}/camera_axes",
                _frame_arrows(rr, base_T_camera, "camera", length=_CAMERA_AXIS_M))
     tag_pose = base_T_gripper @ mount
     rr.log(f"{root}/tag_axes", _frame_arrows(rr, tag_pose, "tag", length=_TAG_AXIS_M))
-    for path in ("camera_axes", "tag_axes", "gripper_link_axes"):
-        rr.log(f"{root}/{path}", rr.CoordinateFrame("base_link"), static=True)
     twin.log_camera(image)
     twin.flush()
     return camera_T_tag
@@ -385,9 +393,6 @@ class HandEyeView:
         self.intrinsics = intrinsics
         self.tag = tag
         self.detector = tag_detector(tag)
-        root = f"/{self.twin.tree.name}"
-        for path in ("camera_axes", "tag_axes", "gripper_link_axes"):
-            self.rr.log(f"{root}/{path}", self.rr.CoordinateFrame("base_link"), static=True)
 
     def update(self, frame, arm, base_T_camera=None):
         return log_hand_eye(
