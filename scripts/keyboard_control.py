@@ -9,7 +9,7 @@
     P              : print pose
     Space          : grip / release
     + / -          : larger / smaller step
-    Esc            : quit
+    Esc            : quit and fold to rest
 
     uv run python scripts/keyboard_control.py --mock
     uv run python scripts/keyboard_control.py --live
@@ -20,6 +20,7 @@ from pynput import keyboard
 from so101_control import SO101
 from so101_control.teleop import TELEOP_SPEED_DEG_S, Teleop, run
 from so101_utils.config import arm_parser, load_robot
+from so101_utils.interrupts import ignore_sigint
 from so101_utils.views import watch_arm
 
 if __name__ == "__main__":
@@ -40,3 +41,6 @@ if __name__ == "__main__":
                 run(teleop, listener.is_alive, arm.refresh)
             except KeyboardInterrupt:
                 print("Stopped.")
+        print("Going to rest.")
+        ignore_sigint()
+        arm.rest()

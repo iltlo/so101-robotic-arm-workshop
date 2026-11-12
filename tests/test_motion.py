@@ -26,6 +26,34 @@ class _Held:
         return dict(action)
 
 
+class _Sag:
+    """Follows the goal until four degrees short, then holds, like a loaded joint."""
+
+    def __init__(self):
+        self.positions = {f"{name}.pos": 0.0 for name in (*JOINTS, "gripper")}
+        self.goal = 0.0
+
+    def get_observation(self):
+        return dict(self.positions)
+
+    def send_action(self, action):
+        self.goal = action["shoulder_pan.pos"]
+        self.positions["shoulder_pan.pos"] = max(0.0, min(self.goal, 6.0))
+        return dict(action)
+
+
+def test_a_joint_that_stops_short_settles_instead_of_timing_out():
+    robot = _Sag()
+    started = time.monotonic()
+    done = move_joints(
+        robot, {"shoulder_pan": 10.0}, LIMITS,
+        speed_deg_s=60, period_s=0.01, timeout_s=5.0,
+    )
+    elapsed = time.monotonic() - started
+    assert done["shoulder_pan"] == pytest.approx(6.0)
+    assert elapsed < 2.0
+
+
 def test_a_joint_just_past_the_stop_can_still_move_inside():
     robot = MockBackend()
     robot.positions["shoulder_lift.pos"] = -108.84

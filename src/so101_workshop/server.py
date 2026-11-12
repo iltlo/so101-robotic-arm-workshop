@@ -76,10 +76,6 @@ def create_app(agent: Agent | None = None, *, listen: bool = False, viewer: bool
         from so101_utils.ports import get_ports
         return {"ports": sorted(get_ports())}
 
-    @app.post("/api/probe")
-    def probe(body: dict = Body(default_factory=dict)):
-        return agent.probe(body.get("host"))
-
     @app.post("/api/arm/connect")
     def connect_arm(body: dict = Body(default_factory=dict)):
         require("connect")
@@ -99,11 +95,10 @@ def create_app(agent: Agent | None = None, *, listen: bool = False, viewer: bool
     @app.get("/api/cameras")
     def cameras():
         require("connect")
-        profiles, devices = agent.camera_catalog(fresh=True)
+        profiles = agent.camera_catalog(fresh=True)
         return {
             "profiles": profiles,
             "active": agent.camera_path().name,
-            "devices": list(devices),
         }
 
     @app.post("/api/cameras/select")
@@ -118,7 +113,7 @@ def create_app(agent: Agent | None = None, *, listen: bool = False, viewer: bool
     def connect_camera(body: dict = Body(default_factory=dict)):
         require("connect")
         overrides = {
-            key: body[key] for key in ("device", "url", "serial", "width", "height", "fps")
+            key: body[key] for key in ("serial", "width", "height", "fps")
             if body.get(key) is not None and body.get(key) != ""
         }
         return call(lambda: {

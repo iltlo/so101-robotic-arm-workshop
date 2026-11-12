@@ -7,6 +7,14 @@ import numpy as np
 from so101_utils.transforms import Intrinsics, normalized_ray, transform
 
 
+def tag_rpy_deg(camera_T_tag) -> np.ndarray:
+    """Camera-frame XYZ Euler angles of the tag, in degrees."""
+    from scipy.spatial.transform import Rotation
+
+    pose = np.asarray(camera_T_tag, dtype=float)
+    return Rotation.from_matrix(pose[:3, :3]).as_euler("xyz", degrees=True)
+
+
 @dataclass(frozen=True)
 class Tag:
     """One tag: family, id, black-square edge, and its fixed mount on gripper_link."""

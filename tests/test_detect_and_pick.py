@@ -1,42 +1,31 @@
-"""The detect-and-pick script turns reCamera payloads into pickable boxes."""
+"""The detect-and-pick scripts run the local YOLO model."""
 
 import importlib.util
-import json
+import sys
 from pathlib import Path
 
-from so101_workshop.detections import DetectionStore
-
-_SCRIPT = Path(__file__).resolve().parents[1] / "application" / "detect_and_pick.py"
+APP = Path(__file__).resolve().parents[1] / "application"
 
 
-def _load():
-    spec = importlib.util.spec_from_file_location("detect_and_pick", _SCRIPT)
+def _load(name):
+    if str(APP) not in sys.path:
+        sys.path.insert(0, str(APP))
+    spec = importlib.util.spec_from_file_location(name.removesuffix(".py"), APP / name)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-def test_camera_payloads_become_boxes_without_an_image():
-    module = _load()
-    store = DetectionStore()
-    raw = json.dumps({
-        "data": {
-            "boxes": [[10, 20, 30, 40, 77, 1]],
-            "labels": ["cup"],
-            "resolution": [640, 640],
-            "image": "not-kept",
-        },
-    }).encode()
-    module._store_payload(store, raw)
-    snapshot = store.snapshot()
-    assert snapshot["source"] == "recamera"
-    assert snapshot["resolution"] == [640, 640]
-    assert snapshot["boxes"][0]["label"] == "cup"
+def test_the_demo_model_is_in_the_checkout():
+    module = _load("detect_and_pick.py")
+    assert module.DEFAULT_MODEL.is_file()
+    assert module.DEFAULT_MODEL.stat().st_size > 1_000_000
 
 
-def test_bad_camera_payloads_are_ignored():
-    module = _load()
-    store = DetectionStore()
-    module._store_payload(store, b"{not json")
-    module._store_payload(store, b"[]")
-    assert store.snapshot()["boxes"] == []
+def test_the_workshop_pick_parameters_are_editable_constants():
+    module = _load("detect_and_pick.py")
+    assert 0.0 < module.APPROACH_HEIGHT_OFFSET_M <= 0.1
+    assert module.PICK_HEIGHT_OFFSET_M >= 0.0
+    assert module.GRIP_CLOSE_DELAY_S > 0.0
+    assert module.GRIP_OPEN_DELAY_S > 0.0
+    assert f"{module.APPROACH_HEIGHT_OFFSET_M * 1000:.0f} mm" in module.PAGE_TEXT

@@ -8,6 +8,7 @@ import pytest
 from scipy.spatial.transform import Rotation, Slerp
 
 from so101_utils.config import load_hand_eye, load_robot
+from so101_utils.tags import tag_rpy_deg
 from so101_utils.transforms import Sample, average_transforms, solve_eye_to_hand
 
 _AUTO = Path(__file__).parents[1] / "calibration" / "auto_hand_eye.py"
@@ -54,6 +55,13 @@ def test_too_few_poses_are_rejected():
     mount = load_robot()["tag"].gripper_T_tag
     with pytest.raises(ValueError, match="4"):
         solve_eye_to_hand([Sample(np.eye(4), np.eye(4))] * 3, mount)
+
+
+def test_tag_rpy_is_the_camera_frame_euler_angles_in_degrees():
+    pose = _pose([0.0, 0.0, np.deg2rad(30.0)], [0.0, 0.0, 0.4])
+    roll, pitch, yaw = tag_rpy_deg(pose)
+    assert (roll, pitch) == pytest.approx((0.0, 0.0), abs=1e-9)
+    assert yaw == pytest.approx(30.0)
 
 
 def test_saved_hand_eye_is_a_rigid_transform():

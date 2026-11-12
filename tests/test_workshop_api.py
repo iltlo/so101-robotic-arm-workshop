@@ -1,4 +1,4 @@
-"""The loopback API drives a mock arm and does not open the camera socket."""
+"""The loopback API drives a mock arm and does not open the camera."""
 
 from types import SimpleNamespace
 import time
@@ -110,7 +110,7 @@ def test_click_without_a_camera_is_rejected(client):
     assert "Camera" in response.json()["detail"]
 
 
-def test_detections_panel_is_empty_until_a_payload_arrives(client):
+def test_detections_panel_is_empty_until_yolo_reports(client):
     body = client.get("/api/detections").json()
     assert body["enabled"] is True
     assert body["boxes"] == []

@@ -14,10 +14,11 @@ def test_explicit_directory_is_seeded(tmp_path):
     station = prepare_station(str(tmp_path / "station"))
     assert (station / "config" / "robot.yaml").is_file()
     assert (station / "config" / "camera.yaml").is_file()
-    assert "backend: recamera" in (station / "config" / "camera.yaml").read_text()
-    for name in ("camera_recamera.yaml", "camera_logi.yaml", "camera_usbcam.yaml"):
-        assert (station / "config" / name).is_file()
-    assert "camera_profile: camera_recamera.yaml" in (station / "config" / "workshop.yaml").read_text()
+    assert "backend: realsense" in (station / "config" / "camera.yaml").read_text()
+    assert (station / "config" / "camera_demo.yaml").is_file()
+    workshop = (station / "config" / "workshop.yaml").read_text()
+    assert "camera_profile: camera.yaml" in workshop
+    assert "yolo_model: detection/model/demo.pt" in workshop
     text = (station / "config" / "robot.yaml").read_text()
     assert "port:" in text
     prepare_station(str(station))

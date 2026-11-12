@@ -106,6 +106,12 @@ def validated_limits(config: dict) -> dict[str, tuple[float, float]]:
 
 def load_camera(path: str | Path | None = None) -> dict:
     data = _load(Path(path) if path else CONFIG / "camera.yaml")
+    if str(data.get("backend") or "realsense") == "realsense":
+        # A RealSense reports its intrinsics when the colour stream opens. Any
+        # copy in an older profile is ignored, so swapping a D405 for a D435
+        # cannot leave the wrong focal lengths in use.
+        data["intrinsics"] = None
+        return data
     intr = data.get("intrinsics") or {}
     data["intrinsics"] = Intrinsics(
         int(data["width"]),
@@ -125,6 +131,8 @@ def save_camera_intrinsics(intr: Intrinsics, *, serial=None, path: str | Path | 
     """
     path = Path(path) if path else CONFIG / "camera.yaml"
     current = _load(path)
+    if str(current.get("backend") or "realsense") == "realsense":
+        raise ValueError("RealSense intrinsics come from the device; nothing to save")
     current["serial"] = serial if serial is not None else current.get("serial")
     current["width"] = int(intr.width)
     current["height"] = int(intr.height)
@@ -134,7 +142,7 @@ def save_camera_intrinsics(intr: Intrinsics, *, serial=None, path: str | Path | 
         "distortion": [float(v) for v in intr.distortion],
         "distortion_model": intr.distortion_model,
     }
-    path.write_text("# RGB camera. Chessboard intrinsics are written by calibration/intrinsics.py.\n"
+    path.write_text("# RGB camera. A profile camera gets its intrinsics from calibration/intrinsics.py.\n"
                     + yaml.safe_dump(current, sort_keys=False))
 
 

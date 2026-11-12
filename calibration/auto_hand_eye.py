@@ -18,6 +18,7 @@ from so101_control.motion import MotionError
 from so101_utils.auto_hand_eye import DWELL_S, calibration_poses
 from so101_utils.camera import open_camera
 from so101_utils.config import arm_parser, load_robot, save_camera_intrinsics, save_hand_eye
+from so101_utils.interrupts import ignore_sigint
 from so101_utils.transforms import MIN_POSES, Sample, solve_eye_to_hand
 from so101_utils.views import HandEyeView
 
@@ -39,7 +40,8 @@ def capture_sample(arm, cam, view, estimate):
 
 def run(arm, cam, view) -> bool:
     """Tour the poses, solve, and save. Returns True when a result was written."""
-    save_camera_intrinsics(cam.intrinsics, serial=None)
+    if not getattr(cam, "intrinsics_from_device", False):
+        save_camera_intrinsics(cam.intrinsics, serial=None)
     poses = calibration_poses()
     samples = []
     estimate = None
@@ -83,6 +85,7 @@ if __name__ == "__main__":
             run(arm, cam, view)
         except KeyboardInterrupt:
             print("Stopped.")
+            ignore_sigint()
             try:
                 arm.rest()
             except Exception:

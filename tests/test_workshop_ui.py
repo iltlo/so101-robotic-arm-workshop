@@ -21,7 +21,7 @@ def station(tmp_path, monkeypatch):
     source = station_config.CONFIG
     config = tmp_path / "config"
     config.mkdir()
-    for name in ("camera.yaml", "camera_demo.yaml", "camera_realsense.yaml"):
+    for name in ("camera.yaml", "camera_demo.yaml"):
         shutil.copy(source / name, config / name)
     monkeypatch.setattr(station_config, "CONFIG", config)
     return config
@@ -99,11 +99,11 @@ def test_camera_profiles_are_listed_and_selected(station):
     with TestClient(create_app(agent, listen=False)) as client:
         data = client.get("/api/cameras").json()
         names = {profile["name"] for profile in data["profiles"]}
-        assert {"camera.yaml", "camera_demo.yaml", "camera_realsense.yaml"} <= names
+        assert {"camera.yaml", "camera_demo.yaml"} <= names
         demo = next(item for item in data["profiles"] if item["name"] == "camera_demo.yaml")
         assert demo["backend"] == "demo"
         assert demo["available"] is True
-        assert (demo["width"], demo["height"]) == (1280, 720)
+        assert (demo["width"], demo["height"]) == (640, 480)
 
         chosen = client.post("/api/cameras/select", json={"profile": "camera_demo.yaml"})
         assert chosen.status_code == 200, chosen.text

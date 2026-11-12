@@ -629,33 +629,18 @@
           <p class="hint" id="camera-detail" style="margin-top:6px">Loading camera profiles.</p>
           <p class="hint" id="camera-live" style="margin-top:4px">No stream</p>
           <div class="live-wrap" style="margin-top:12px"><div class="live-slot" id="slot-camera"></div><span class="live-label">Camera preview</span></div>
-          <div class="grid-2">
-            <div>
-              <label class="field" for="camera-device">Device index (webcam)</label>
-              <input id="camera-device" type="number" min="0" placeholder="auto" list="video-devices">
-              <datalist id="video-devices"></datalist>
-            </div>
-            <div>
-              <label class="field" for="camera-url">reCamera URL / WebSocket</label>
-              <input id="camera-url" type="text" placeholder="ws://192.168.42.1:8090/ws/boxes">
-            </div>
-          </div>
           <div class="grid-4" style="margin-top:2px">
             <div><label class="field" for="camera-width">Width</label><input id="camera-width" type="number" min="1"></div>
             <div><label class="field" for="camera-height">Height</label><input id="camera-height" type="number" min="1"></div>
             <div><label class="field" for="camera-fps">FPS</label><input id="camera-fps" type="number" min="1"></div>
-            <div>
-              <label class="field">Probe</label>
-              <span class="hint" id="probe-result">no stream yet</span>
-            </div>
+            <div><label class="field" for="camera-serial">Serial (optional)</label><input id="camera-serial" type="text" placeholder="any device"></div>
           </div>
           <div class="row">
             <button class="btn quiet" id="camera-refresh" type="button">Refresh list</button>
             <button class="btn good" id="camera-connect" type="button">Connect camera</button>
             <button class="btn" id="camera-disconnect" type="button">Disconnect camera</button>
-            <button class="btn quiet" id="probe" type="button">Probe reCamera</button>
           </div>
-          <p class="hint" style="margin-top:10px">Demo is synthetic. reCamera needs 192.168.42.1 on the USB network; RealSense needs the vision extra.</p>
+          <p class="hint" style="margin-top:10px">RealSense intrinsics are read from the camera when it opens. Demo is synthetic and needs no hardware.</p>
         </article>
 
         </article>
@@ -723,7 +708,7 @@
             <button class="btn quiet" id="board-reset" type="button">Reset views</button>
             <button class="btn" id="solve-board" type="button">Solve intrinsics</button>
           </div>
-          <p class="hint" id="intrinsics-result" style="margin-top:10px">Saves fx, fy, and distortion into the active camera profile.</p>
+          <p class="hint" id="intrinsics-result" style="margin-top:10px">Read from the camera when it opens. Demo uses fixed values.</p>
         </article>
       </section>
 
@@ -888,7 +873,6 @@
     status: null,
     profiles: [],
     profileSig: "",
-    deviceSig: "",
     appliedProfile: "",
     jointsSig: "",
     boxSig: "",
@@ -903,7 +887,6 @@
     portSaved: false,
     viewerUrl: "",
     viewerGeneration: "",
-    lastServerMessage: "",
     localUntil: 0,
     statusBusy: false,
     statusFailures: 0,
@@ -1193,6 +1176,16 @@
     const views = status.intrinsics_views || 0;
     $("board-count").textContent = `${views} chessboard views`;
     $("board-bar").style.width = `${Math.min(views, 10) / 10 * 100}%`;
+    const fromDevice = cam.intrinsics_source === "device";
+    $("board").disabled = fromDevice;
+    $("board-reset").disabled = fromDevice;
+    $("solve-board").disabled = fromDevice;
+    if (fromDevice && cam.intrinsics) {
+      const intr = cam.intrinsics;
+      $("intrinsics-result").textContent = "Read from the camera: "
+        + `fx ${Number(intr.fx).toFixed(1)} · fy ${Number(intr.fy).toFixed(1)}`
+        + ` · cx ${Number(intr.cx).toFixed(1)} · cy ${Number(intr.cy).toFixed(1)}`;
+    }
   }
 
   function profileSignature(profiles) {
@@ -1204,8 +1197,6 @@
     const bits = [`Backend ${profile.backend || "?"}`];
     if (profile.width || profile.height) bits.push(`${profile.width || "?"}×${profile.height || "?"}`);
     if (profile.fps) bits.push(`${profile.fps} fps`);
-    if (profile.backend === "webcamera") bits.push(`device ${profile.device == null ? "auto" : profile.device}`);
-    if (profile.backend === "recamera") bits.push(profile.url || "no URL");
     if (profile.backend === "realsense") bits.push(profile.serial ? `serial ${profile.serial}` : "any device");
     if (!profile.available) bits.push(`unavailable: ${profile.reason}`);
     return bits.join(" · ");
@@ -1213,8 +1204,7 @@
 
   function applyProfileFields(profile) {
     if (!profile) return;
-    $("camera-device").value = profile.device == null ? "" : String(profile.device);
-    $("camera-url").value = profile.url || "";
+    $("camera-serial").value = profile.serial == null ? "" : String(profile.serial);
     $("camera-width").value = profile.width == null ? "" : String(profile.width);
     $("camera-height").value = profile.height == null ? "" : String(profile.height);
     $("camera-fps").value = profile.fps == null ? "" : String(profile.fps);
@@ -1248,29 +1238,15 @@
     }
   }
 
-  function renderDevices(devices) {
-    const list = (devices || []).join(",");
-    if (list === state.deviceSig) return;
-    state.deviceSig = list;
-    const datalist = $("video-devices");
-    datalist.replaceChildren();
-    (devices || []).forEach((device) => {
-      const option = document.createElement("option");
-      option.value = String(device);
-      option.textContent = `/dev/video${device}`;
-      datalist.append(option);
-    });
-  }
-
   function renderCamera(camera) {
     renderProfiles(camera.presets || [], camera.profile);
-    renderDevices(camera.devices || []);
     const bits = [];
     if (camera.connected) bits.push(`Streaming ${camera.width}×${camera.height}`);
     else if (camera.connecting) bits.push("Opening the camera…");
     else bits.push("No stream");
     if (camera.intrinsics) {
       bits.push(`fx ${Number(camera.intrinsics.fx).toFixed(1)} · fy ${Number(camera.intrinsics.fy).toFixed(1)}`);
+      if (camera.intrinsics_source === "device") bits.push("from device");
     }
     if (camera.error) bits.push(camera.error);
     $("camera-live").textContent = bits.join(" · ");
@@ -1297,12 +1273,10 @@
       pill("Torque", arm.torque_on ? "on" : "off", arm.torque_on ? "good" : ""),
       pill("E-stop", status.estop ? "ON" : "off", status.estop ? "bad" : ""),
       pill("Camera", camera.connected ? "on" : camera.connecting ? "opening" : "off", camera.connected ? "good" : ""),
-      pill("Probe", status.probe ? (status.probe.ports && status.probe.ports["8090"] ? "stream" : "no stream") : "—"),
     );
 
-    if (status.message && status.message !== state.lastServerMessage) {
-      state.lastServerMessage = status.message;
-      if (performance.now() > state.localUntil) $("message").textContent = status.message;
+    if (status.message && performance.now() > state.localUntil) {
+      $("message").textContent = status.message;
     }
 
     const bits = [];
@@ -1394,7 +1368,6 @@
   async function loadCameras() {
     const data = await api("/api/cameras");
     renderProfiles(data.profiles || [], data.active);
-    renderDevices(data.devices || []);
     return data;
   }
 
@@ -1470,13 +1443,11 @@
   $("camera-refresh").addEventListener("click", () => run(loadCameras, (data) => `${(data.profiles || []).length} camera profiles`));
   $("camera-connect").addEventListener("click", () => {
     const body = { profile: $("camera-profile").value };
-    const device = $("camera-device").value.trim();
-    const url = $("camera-url").value.trim();
+    const serial = $("camera-serial").value.trim();
     const width = $("camera-width").value.trim();
     const height = $("camera-height").value.trim();
     const fps = $("camera-fps").value.trim();
-    if (device !== "") body.device = Number(device);
-    if (url !== "") body.url = url;
+    if (serial !== "") body.serial = serial;
     if (width !== "") body.width = Number(width);
     if (height !== "") body.height = Number(height);
     if (fps !== "") body.fps = Number(fps);
@@ -1485,14 +1456,6 @@
   $("camera-disconnect").addEventListener("click", () => {
     run(() => api("/api/camera/disconnect", {}), (data) => data.message).then(refreshStatus);
   });
-  $("probe").addEventListener("click", () => run(
-    () => api("/api/probe", {}),
-    (data) => {
-      const stream = data.ports && data.ports["8090"];
-      $("probe-result").textContent = stream ? "stream open on 8090" : "no stream on 8090";
-      return `${data.host}: ${stream ? "stream" : "no stream"}`;
-    },
-  ).then(refreshStatus));
 
   const MOTOR_ACTIONS = ["midpoint", "range-start", "range-stop"];
 
@@ -1926,7 +1889,7 @@
       const td = document.createElement("td");
       td.colSpan = 4;
       td.className = "hint";
-      td.textContent = "Waiting for boxes from the camera.";
+      td.textContent = "Waiting for YOLO boxes.";
       tr.append(td);
       body.append(tr);
       return;
@@ -2103,9 +2066,8 @@
       try { data = JSON.parse(event.data); } catch { return; }
       if (data.type === "error") {
         note(data.detail || "Teleop error");
-      } else if (data.type === "ok" && data.message && data.message !== state.lastServerMessage) {
-        state.lastServerMessage = data.message;
-        if (performance.now() > state.localUntil) $("message").textContent = data.message;
+      } else if (data.type === "ok" && data.message && performance.now() > state.localUntil) {
+        $("message").textContent = data.message;
       }
     });
     opened.addEventListener("close", () => {

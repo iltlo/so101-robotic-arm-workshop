@@ -4,7 +4,8 @@ Tag family, id, size, and mount come from config/robot.yaml. The Rerun triads
 are tool = fingertips, link = gripper_link, tag = mount. Keys (X11): T torque
 off/on, Enter record, C average and save, Q quit. Support the arm before T.
 
-Saves config/hand_eye.yaml and refreshes config/camera.yaml intrinsics.
+Saves config/hand_eye.yaml and, for a profile camera, refreshes the
+config/camera.yaml intrinsics. A RealSense keeps its device intrinsics.
 """
 
 import numpy as np
@@ -26,7 +27,8 @@ if __name__ == "__main__":
     saved = False
     print("T relaxes the arm (support it). Enter records. C solves and saves. Q quits.")
     with SO101.connect(mock=False) as arm, open_camera() as cam:
-        save_camera_intrinsics(cam.intrinsics, serial=None)
+        if not getattr(cam, "intrinsics_from_device", False):
+            save_camera_intrinsics(cam.intrinsics, serial=None)
         view = HandEyeView(config["urdf"], cam.intrinsics, tag)
         with keyboard(("t", "enter", "c", "q")) as keys:
             while True:

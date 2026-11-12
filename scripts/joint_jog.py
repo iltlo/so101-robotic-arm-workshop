@@ -1,11 +1,12 @@
 """Step one arm joint by at most 2 degrees.
 
-Type `shoulder_pan 1` or `elbow_flex -1`. `q` quits.
+Type `shoulder_pan 1` or `elbow_flex -1`. `q` quits and folds to rest.
 Joints: shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll.
 """
 
 from so101_control import SO101
 from so101_utils.config import arm_parser, load_robot
+from so101_utils.interrupts import ignore_sigint
 from so101_utils.views import watch_arm
 
 
@@ -30,3 +31,6 @@ if __name__ == "__main__":
                 print(exc)
                 continue
             print(arm.get_joints())
+        print("Going to rest.")
+        ignore_sigint()
+        arm.rest()

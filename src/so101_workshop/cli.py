@@ -44,7 +44,7 @@ def main(argv: list[str] | None = None) -> None:
     run.add_argument("--port", type=int, default=8020)
     run.add_argument("--config-dir", default=None, help="station directory (default: this repo, or ~/.so101-workshop)")
     run.add_argument("--mock", action="store_true", help="connect the in-memory arm when the server starts")
-    run.add_argument("--no-detectors", action="store_true", help="do not open the YOLO websocket or MQTT client")
+    run.add_argument("--no-detectors", action="store_true", help="do not start the local YOLO detector")
     run.add_argument("--no-viewer", action="store_true", help="do not host the Rerun web viewer")
     args = parser.parse_args(argv)
     if args.command == "run":

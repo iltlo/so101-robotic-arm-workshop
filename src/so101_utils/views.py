@@ -13,7 +13,14 @@ from so101_utils.model import (
     JOINTS,
     tool_rpy,
 )
-from so101_utils.tags import Tag, draw_error, draw_tag_overlay, find_tag, tag_detector
+from so101_utils.tags import (
+    Tag,
+    draw_error,
+    draw_tag_overlay,
+    find_tag,
+    tag_detector,
+    tag_rpy_deg,
+)
 from so101_utils.urdf_view import UrdfScene
 
 _JOINT_COLORS = ((255, 94, 111), (255, 188, 92), (91, 197, 233),
@@ -189,6 +196,23 @@ class Twin:
         if not np.isfinite(offset) or offset == 0.0:
             raise ValueError("EE tool offset must be a non-zero distance")
         self.ee_tool_offset = offset
+
+    def set_intrinsics(self, intrinsics) -> None:
+        """Adopt the camera's reported intrinsics and enable the camera view.
+
+        The viewer can open before the camera does, so a twin that started
+        without intrinsics takes them here once the device reports them.
+        """
+        if not self.alive:
+            return
+        import rerun.blueprint as rrb
+
+        self.intrinsics = intrinsics
+        self.rr.log(_CAMERA, _pinhole_entity(self.rr, intrinsics), static=True)
+        self.rr.send_blueprint(
+            _arm_blueprint(rrb, f"/{self.tree.name}", intrinsics=intrinsics)
+        )
+        self.flush()
 
     def close(self) -> None:
         """Stop sending to the viewer. Later draws become no-ops."""
@@ -404,9 +428,11 @@ def _format_pose(pose, tag: Tag) -> str:
     pose = np.asarray(pose, dtype=float)
     rows = "\n".join("[" + " ".join(f"{value:8.4f}" for value in row) + "]" for row in pose)
     x, y, z = pose[:3, 3]
+    roll, pitch, yaw = tag_rpy_deg(pose)
     return (f"Tag ID: {tag.id}\n"
             "Camera frame: +X right, +Y down, +Z forward\n"
             f"Tag origin (metres): X={x:.4f}, Y={y:.4f}, Z={z:.4f}\n"
+            f"Tag RPY (deg): roll={roll:.2f}, pitch={pitch:.2f}, yaw={yaw:.2f}\n"
             f"camera_T_tag:\n{rows}")
 
 

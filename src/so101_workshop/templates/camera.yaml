@@ -1,21 +1,7 @@
-# RGB camera. Chessboard intrinsics are written by the calibration page.
-# Supervisor websocket is 1280x720. These fx/fy/cx/cy are the 1920x1080
-# calibration scaled by 2/3. Rerun calibration to measure them.
-backend: recamera
-url: ws://192.168.42.1:8090/ws/boxes
+# RGB camera. This workshop uses an Intel RealSense.
+# Intrinsics are read from the colour stream when the camera opens.
+backend: realsense
 serial: null
-width: 1280
-height: 720
+width: 640
+height: 480
 fps: 30
-intrinsics:
-  fx: 734.5929889227747
-  fy: 734.261517693878
-  cx: 633.6926830198385
-  cy: 362.0813060365327
-  distortion:
-  - 0.009470714167752494
-  - -0.03555622052053476
-  - -0.0021941856727355795
-  - -0.001594949937244289
-  - 0.02589572254753508
-  distortion_model: brown_conrady

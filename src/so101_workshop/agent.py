@@ -4,9 +4,6 @@ from importlib.util import find_spec
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Event, Lock, RLock, Thread, current_thread
-import json
-import socket
-import sys
 import time
 import uuid
 
@@ -18,7 +15,7 @@ from so101_control.teleop import MAX_STEP_M, MIN_STEP_M, TELEOP_SPEED_DEG_S, Tel
 from so101_utils.assets import assets_ready, ensure_assets
 from so101_utils import config as station_config
 from so101_utils.auto_hand_eye import DWELL_S, calibration_poses
-from so101_utils.camera import camera_backend, list_video_devices
+from so101_utils.camera import camera_backend
 from so101_utils.click_app import box_centre, click_target, select_box
 from so101_utils.config import (
     load_camera,
@@ -40,18 +37,15 @@ from so101_utils.moves import (
 from so101_utils.ports import get_ports, port_that_vanished, write_port
 from so101_utils.tags import find_tag
 from so101_utils.transforms import MIN_POSES, Sample, solve_eye_to_hand
-from so101_workshop.detections import (
-    DetectionBridge,
-    DetectionStore,
-    parse_detections,
-)
+from so101_workshop.detections import DetectionStore
 from so101_workshop.hooks import NullHook
+from so101_workshop.yolo import DEFAULT_CONFIDENCE, YoloWorker
 
 _FEATURES = ("connect", "estop", "teleop", "click_and_go", "calibration", "yolo", "instructor")
 _VIEWER_PERIOD_S = 0.15
 _VIEWER_CAMERA_PERIOD_S = 0.5
-# Status polls every 800 ms. Profiles and video devices only need to be read
-# every few seconds; the hardware page refreshes them on demand.
+# Status polls every 800 ms. Profiles only need to be read every few seconds;
+# the hardware page refreshes them on demand.
 CATALOG_TTL_S = 2.5
 
 
@@ -76,8 +70,8 @@ def load_settings() -> dict:
             if name in raw:
                 features[name] = bool(raw[name])
     data["features"] = features
-    data.setdefault("camera_host", "192.168.42.1")
-    data.setdefault("detections", {})
+    data.setdefault("yolo_model", "detection/model/demo.pt")
+    data.setdefault("yolo_confidence", DEFAULT_CONFIDENCE)
     return data
 
 
@@ -105,12 +99,11 @@ class Agent:
         self.camera_error = None
         self.camera_profile = self.settings.get("camera_profile") or None
         self.camera_config_used = None
-        self.last_probe = None
         self.estop_event = Event()
         self._estop_lock = Lock()
         self._estop_applied = False
         self.detections = DetectionStore()
-        self._bridge = None
+        self._detector = None
         self._queue: Queue = Queue()
         self._stop = Event()
         self._worker = None
@@ -150,7 +143,7 @@ class Agent:
         self._tag_lock = Lock()
         self._catalog_lock = Lock()
         self._catalog_at = 0.0
-        self._catalog: tuple[list[dict], list[int]] = ([], [])
+        self._catalog: list[dict] = []
 
     def start_worker(self) -> None:
         if self._worker is None or not self._worker.is_alive():
@@ -166,10 +159,17 @@ class Agent:
             self._viewer_tick_thread.start()
 
     def start_detectors(self) -> None:
-        if not self.features.get("yolo", True) or self._bridge is not None:
+        if not self.features.get("yolo", True) or self._detector is not None:
             return
-        self._bridge = DetectionBridge(self.detections, self.settings, self.hook)
-        self._bridge.start()
+        model = Path(str(self.settings.get("yolo_model") or "detection/model/demo.pt"))
+        if not model.is_absolute():
+            model = station_config.ROOT / model
+        self._detector = YoloWorker(
+            self.detections, self.hook,
+            model_path=model,
+            confidence=float(self.settings.get("yolo_confidence") or DEFAULT_CONFIDENCE),
+        )
+        self._detector.start()
 
     def close(self) -> None:
         if self._closed:
@@ -191,8 +191,8 @@ class Agent:
             stop_all()
         except Exception:
             pass
-        if self._bridge is not None:
-            self._bridge.close()
+        if self._detector is not None:
+            self._detector.close()
         if self._worker is not None:
             self._worker.join(timeout=2)
         self.disconnect_camera()
@@ -287,59 +287,51 @@ class Agent:
         return load_camera(self.camera_path())
 
     def camera_profiles(self) -> list[dict]:
-        """Every camera*.yaml in the station, with availability for this machine."""
+        """Every RealSense or demo profile in the station."""
         active = self.camera_path()
         profiles = []
         for path in sorted(Path(station_config.CONFIG).glob("camera*.yaml")):
             try:
                 cfg = load_camera(path)
                 backend = camera_backend(cfg)
-                available, reason = self._camera_available(backend, cfg)
-                profiles.append({
-                    "name": path.name,
-                    "label": path.stem.removeprefix("camera_").replace("_", " ").title()
-                             or "Active camera",
-                    "backend": backend,
-                    "device": cfg.get("device"),
-                    "url": cfg.get("url"),
-                    "serial": cfg.get("serial"),
-                    "width": cfg.get("width"),
-                    "height": cfg.get("height"),
-                    "fps": cfg.get("fps"),
-                    "available": available,
-                    "reason": reason,
-                    "active": path == active,
-                })
-            except Exception as exc:
-                profiles.append({
-                    "name": path.name, "label": path.stem, "available": False,
-                    "reason": str(exc), "active": False,
-                })
+            except Exception:
+                # A leftover profile for a removed backend is not shown.
+                continue
+            available, reason = self._camera_available(backend)
+            profiles.append({
+                "name": path.name,
+                "label": path.stem.removeprefix("camera_").replace("_", " ").title()
+                         or "Active camera",
+                "backend": backend,
+                "serial": cfg.get("serial"),
+                "width": cfg.get("width"),
+                "height": cfg.get("height"),
+                "fps": cfg.get("fps"),
+                "available": available,
+                "reason": reason,
+                "active": path == active,
+            })
         return profiles
 
-    def camera_catalog(self, *, fresh: bool = False) -> tuple[list[dict], list[int]]:
-        """Profiles and video devices, read at most once per TTL.
+    def camera_catalog(self, *, fresh: bool = False) -> list[dict]:
+        """Profiles, read at most once per TTL.
 
-        The status route runs this on every poll. Re-reading six YAML files and
-        scanning /dev every 800 ms competes with arm and camera I/O.
+        The status route runs this on every poll. Re-reading the YAML files
+        every 800 ms competes with arm and camera I/O.
         """
         now = time.monotonic()
         with self._catalog_lock:
             if not fresh and now - self._catalog_at < CATALOG_TTL_S:
                 return self._catalog
-        catalog = (self.camera_profiles(), list_video_devices())
+        catalog = self.camera_profiles()
         with self._catalog_lock:
             self._catalog_at = time.monotonic()
             self._catalog = catalog
         return catalog
 
-    def _camera_available(self, backend: str, cfg: dict) -> tuple[bool, str | None]:
+    def _camera_available(self, backend: str) -> tuple[bool, str | None]:
         if backend == "realsense" and find_spec("pyrealsense2") is None:
             return False, "pyrealsense2 is not installed (vision extra)"
-        if backend == "webcamera" and sys.platform.startswith("linux"):
-            device = cfg.get("device")
-            if isinstance(device, int) and not Path(f"/dev/video{device}").exists():
-                return False, f"/dev/video{device} is not present"
         return True, None
 
     def select_camera_profile(self, name: str | None) -> str | None:
@@ -370,7 +362,7 @@ class Agent:
         if self.cam is not None or self._camera_connecting:
             return self.message
         cfg = self.camera_cfg()
-        for key in ("device", "url", "serial", "width", "height", "fps"):
+        for key in ("serial", "width", "height", "fps"):
             value = (overrides or {}).get(key)
             if value is not None and value != "":
                 cfg[key] = value
@@ -378,13 +370,11 @@ class Agent:
             cfg["width"] = int(cfg["width"])
             cfg["height"] = int(cfg["height"])
             cfg["fps"] = int(cfg["fps"])
-            if cfg.get("device") is not None and cfg.get("device") != "":
-                cfg["device"] = int(cfg["device"])
         except (TypeError, ValueError) as exc:
-            raise ValueError(f"Invalid camera width, height, fps, or device: {exc}") from exc
+            raise ValueError(f"Invalid camera width, height, or fps: {exc}") from exc
         self.camera_config_used = {
             key: cfg.get(key) for key in
-            ("backend", "device", "url", "serial", "width", "height", "fps")
+            ("backend", "serial", "width", "height", "fps")
         }
         self._camera_connecting = True
         self.camera_error = None
@@ -404,24 +394,9 @@ class Agent:
         self.cam = None
         self._cam_thread = None
         self._camera_connecting = False
+        self.message = "Camera disconnected"
         if cm is not None:
             cm.__exit__(None, None, None)
-
-    def probe(self, host: str | None = None) -> dict:
-        host = host or str(self.settings.get("camera_host") or "192.168.42.1")
-        ports = {}
-        for port in (80, 8090):
-            sock = socket.socket()
-            sock.settimeout(0.4)
-            try:
-                sock.connect((host, port))
-                ports[str(port)] = True
-            except OSError:
-                ports[str(port)] = False
-            finally:
-                sock.close()
-        self.last_probe = {"host": host, "ports": ports}
-        return self.last_probe
 
     def press(self, token: str) -> None:
         if self.teleop is None:
@@ -571,7 +546,15 @@ class Agent:
         self.message = "Motor ranges saved"
         return saved
 
+    def _device_intrinsics(self) -> bool:
+        return bool(self.cam is not None
+                    and getattr(self.cam, "intrinsics_from_device", False))
+
     def capture_intrinsics(self) -> int:
+        if self._device_intrinsics():
+            raise RuntimeError(
+                "RealSense intrinsics come from the device; no board captures are needed"
+            )
         frame = self.latest_bgr()
         if frame is None:
             raise RuntimeError("Camera image is not ready")
@@ -596,6 +579,10 @@ class Agent:
         }
 
     def solve_intrinsics(self) -> dict:
+        if self._device_intrinsics():
+            raise RuntimeError(
+                "RealSense intrinsics come from the device; nothing to solve"
+            )
         frame = self.latest_bgr()
         if frame is None:
             raise RuntimeError("Camera image is not ready")
@@ -916,6 +903,7 @@ class Agent:
                 pass
         width = height = None
         intrinsics = None
+        intrinsics_source = None
         if self.cam is not None:
             width = self.cam.intrinsics.width
             height = self.cam.intrinsics.height
@@ -924,16 +912,20 @@ class Agent:
                 "cx": self.cam.intrinsics.cx, "cy": self.cam.intrinsics.cy,
                 "distortion_model": self.cam.intrinsics.distortion_model,
             }
+            intrinsics_source = ("device" if getattr(self.cam, "intrinsics_from_device", False)
+                                 else "profile")
         else:
             try:
                 configured = self.camera_cfg()
                 width = configured["width"]
                 height = configured["height"]
-                intr = configured["intrinsics"]
-                intrinsics = {
-                    "fx": intr.fx, "fy": intr.fy, "cx": intr.cx, "cy": intr.cy,
-                    "distortion_model": intr.distortion_model,
-                }
+                intr = configured.get("intrinsics")
+                if intr is not None:
+                    intrinsics = {
+                        "fx": intr.fx, "fy": intr.fy, "cx": intr.cx, "cy": intr.cy,
+                        "distortion_model": intr.distortion_model,
+                    }
+                    intrinsics_source = "profile"
             except Exception:
                 pass
         try:
@@ -945,7 +937,7 @@ class Agent:
             }
         except Exception:
             hand_eye_file = {"saved": False}
-        profiles, devices = self.camera_catalog()
+        profiles = self.camera_catalog()
         body = {
             "arm": arm,
             "camera": {
@@ -955,10 +947,10 @@ class Agent:
                 "width": width,
                 "height": height,
                 "intrinsics": intrinsics,
+                "intrinsics_source": intrinsics_source,
                 "profile": self.camera_path().name,
                 "config": self.camera_config_used,
                 "presets": profiles,
-                "devices": devices,
                 "realsense_available": find_spec("pyrealsense2") is not None,
             },
             "teleop": {
@@ -969,7 +961,6 @@ class Agent:
             },
             "hand_eye": hand_eye_file,
             "auto_hand_eye": self.auto_hand_eye_status(),
-            "probe": self.last_probe,
             "estop": self.estop_event.is_set(),
             "message": self.message,
             "features": dict(self.features),
@@ -1066,7 +1057,9 @@ class Agent:
             self._ensure_urdf()
             from so101_workshop.viewer import open_viewer
             urdf = Path(station_config.ROOT) / "assets" / "SO101" / "so101_new_calib.urdf"
-            viewer = open_viewer(urdf, self.camera_cfg()["intrinsics"])
+            intrinsics = (self.cam.intrinsics if self.cam is not None
+                          else self.camera_cfg().get("intrinsics"))
+            viewer = open_viewer(urdf, intrinsics)
             if self._closed:
                 viewer.close()
                 return
@@ -1238,10 +1231,21 @@ class Agent:
                 detector=self._tag_detector,
             )
 
+    def _sync_viewer_intrinsics(self, intrinsics) -> None:
+        """Give a running viewer the intrinsics the camera just reported."""
+        viewer = self.viewer
+        if viewer is None or not viewer.running():
+            return
+        with self._viewer_draw_lock:
+            try:
+                viewer.twin.set_intrinsics(intrinsics)
+            except Exception as exc:
+                self.viewer_error = str(exc)
+
     def _open_camera(self, cfg: dict) -> None:
         from so101_utils.camera import open_camera
         try:
-            context = open_camera(cfg, on_payload=self._on_camera_payload)
+            context = open_camera(cfg)
             cam = context.__enter__()
         except Exception as exc:
             self.camera_error = str(exc)
@@ -1250,34 +1254,13 @@ class Agent:
             return
         self._cam_cm = context
         self.cam = cam
+        self._sync_viewer_intrinsics(cam.intrinsics)
         self._cam_stop = Event()
         self._cam_thread = Thread(target=self._camera_loop, name="workshop-camera", daemon=True)
         self._cam_thread.start()
         self.camera_error = None
         self.message = "Camera connected"
         self._camera_connecting = False
-
-    def _on_camera_payload(self, raw) -> None:
-        """YOLO boxes that arrive with the same reCamera JPEG frame."""
-        try:
-            text = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw
-            payload = json.loads(text)
-        except (UnicodeDecodeError, TypeError, json.JSONDecodeError):
-            return
-        if not isinstance(payload, dict):
-            return
-        data = payload.get("data", payload)
-        if not isinstance(data, dict) or "boxes" not in data:
-            return
-        try:
-            parsed = parse_detections(payload)
-        except (ValueError, TypeError, json.JSONDecodeError):
-            return
-        self.detections.update(parsed, source="recamera")
-        try:
-            self.hook.on_detections(parsed["boxes"])
-        except Exception:
-            pass
 
     def _camera_loop(self) -> None:
         import cv2
@@ -1292,6 +1275,8 @@ class Agent:
                 time.sleep(0.03)
                 continue
             image = frame.rgb_bgr
+            if self._detector is not None:
+                self._detector.submit(image)
             ok, encoded = cv2.imencode(
                 ".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), 80],
             )

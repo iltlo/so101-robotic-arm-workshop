@@ -1,7 +1,7 @@
 """Show the camera from config/camera.yaml. Q quits.
 
-`open_camera()` is the whole camera choice: webcam, reCamera, or RealSense. Each
-logged frame is the picture that call just returned.
+`open_camera()` uses the profile's backend: a RealSense, or the synthetic demo.
+Each logged frame is the picture that call just returned.
 
     uv run python scripts/camera_view.py
 """

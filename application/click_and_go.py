@@ -13,6 +13,7 @@ from so101_utils.camera import open_camera
 from so101_utils.click_app import attach_camera, click_target, frame_viewer, run_click_loop
 from so101_utils.click_view import ClickView
 from so101_utils.config import arm_parser, load_hand_eye, load_robot
+from so101_utils.interrupts import ignore_sigint
 from so101_utils.moves import CLICK_TOOL_OFFSET_M as EE_TOOL_OFFSET_M
 from so101_utils.moves import HOVER_M, click_ready as ready, go_to
 from so101_utils.views import watch_arm
@@ -47,3 +48,6 @@ if __name__ == "__main__":
             go_to(arm, view, target)
 
         run_click_loop(cam, view, show, on_click)
+        print("Going to rest.")
+        ignore_sigint()
+        arm.rest()

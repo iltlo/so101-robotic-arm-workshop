@@ -7,10 +7,6 @@ features:
   calibration: true
   yolo: true
   instructor: false
-camera_host: 192.168.42.1
-detections:
-  ws_host: 0.0.0.0
-  ws_port: 8765
-  mqtt_url: mqtt://192.168.42.1:1883
-  mqtt_topic: yolo11n_result
-camera_profile: camera_recamera720.yaml
+camera_profile: null
+yolo_model: detection/model/demo.pt
+yolo_confidence: 0.25

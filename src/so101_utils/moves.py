@@ -11,6 +11,8 @@ PICK_HEIGHT_M = 0.00
 APPROACH_M = 0.080
 DWELL_S = 0.3
 PICK_TOOL_OFFSET_M = 0.025
+# The pick scripts pass their own approach, height, and delays; these values are
+# what the web page uses.
 
 
 def click_ready(arm, view=None) -> None:
@@ -44,14 +46,19 @@ def pick_ready(arm, view=None) -> None:
     arm.release()
 
 
-def pick_and_return(arm, view, target, dwell_s: float = DWELL_S) -> bool:
+def pick_and_return(arm, view, target, dwell_s: float = DWELL_S, *,
+                    approach_m: float = APPROACH_M,
+                    close_delay_s: float = DWELL_S,
+                    open_delay_s: float = DWELL_S) -> bool:
     """Hover above target, move down, rest, and open.
 
     Both poses point the fingers straight down; the twist is re-solved on the way
-    down. A newer click skips the close.
+    down. `approach_m` is the hover height above the target. `close_delay_s` and
+    `open_delay_s` pause after the grip and after the release. A newer click
+    skips the close.
     """
     x, y, z = float(target[0]), float(target[1]), float(target[2])
-    hover_z = z + APPROACH_M
+    hover_z = z + approach_m
     view.report(f"Moving above the pick: {x:.3f}, {y:.3f}, {hover_z:.3f} m")
     if not _down_to(arm, view, x, y, hover_z):
         return False
@@ -63,11 +70,12 @@ def pick_and_return(arm, view, target, dwell_s: float = DWELL_S) -> bool:
     view.report("Closing gripper")
     arm.grip()
     view.report("Holding the grasp")
-    hold(arm, dwell_s)
+    hold(arm, close_delay_s)
     view.report("Returning to rest")
     arm.rest(wait=False)
     arm.release()
     view.report("Released at rest")
+    hold(arm, open_delay_s)
     return True
 
 

@@ -16,10 +16,10 @@ def frame_viewer(arm, twin):
     return show
 
 
-def read_frame(cam, view, show):
-    """Read one frame, publish it to the page, show it, and return it."""
+def read_frame(cam, view, show, prepare=None):
+    """Read one frame and publish it. `prepare` can annotate or detect first."""
     frame = cam.read()
-    view.publish(frame.rgb_bgr)
+    view.publish(prepare(frame.rgb_bgr) if prepare is not None else frame.rgb_bgr)
     show(frame)
     return frame
 
@@ -89,15 +89,17 @@ def select_box(click, boxes, resolution, intrinsics):
     return index, box, box_centre(box, resolution, intrinsics)
 
 
-def run_click_loop(cam, view, show, on_click) -> None:
+def run_click_loop(cam, view, show, on_click, prepare=None) -> None:
     """Publish frames and hand each click to `on_click` until Ctrl-C.
 
-    ValueError and RuntimeError from `on_click` are printed and shown on the
-    page. The callback decides whether a click that arrived during a move is kept.
+    `prepare` sees each BGR frame before it is published, so a detection script
+    can update its box list and draw boxes. ValueError and RuntimeError from
+    `on_click` are printed and shown on the page. The callback decides whether a
+    click that arrived during a move is kept.
     """
     try:
         while True:
-            read_frame(cam, view, show)
+            read_frame(cam, view, show, prepare)
             click = view.consume()
             if click is None:
                 continue

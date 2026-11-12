@@ -13,14 +13,16 @@ dependencies = [
     "numpy>=2.3.2,<3",
     "scipy>=1.14",
     "PyYAML>=6",
-    "opencv-python-headless>=4.11,<4.14",
+    # ultralytics also requires opencv-python, so use the same distribution.
+    "opencv-python>=4.11,<5",
     "fastapi>=0.115",
     "uvicorn>=0.32",
     "pyserial>=3.5,<4",
     "feetech-servo-sdk>=1.0.0",
-    "paho-mqtt>=2.1",
+    # No macOS wheel. macOS runs the demo profile only.
+    "pyrealsense2>=2.55; sys_platform != 'darwin'",
+    "ultralytics>=8.3",
     "pupil-apriltags>=1.0.4; python_version < '3.14'",
-    "websockets>=13",
     # 0.27+ publishes no Intel macOS wheel. 0.26.2 still has Intel Mac,
     # Apple silicon, Linux, and Windows wheels.
     "rerun-sdk>=0.26.2,<0.27",
@@ -30,7 +32,6 @@ dependencies = [
 so101-workshop = "so101_workshop.cli:main"
 
 [project.optional-dependencies]
-vision = ["pyrealsense2"]
 twin = ["pynput>=1.7.8,<1.9"]
 test = ["pytest>=8", "httpx>=0.27"]
 

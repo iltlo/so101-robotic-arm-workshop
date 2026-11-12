@@ -12,6 +12,13 @@ DEFAULT_PERIOD_S = 0.05
 DEFAULT_TIMEOUT_S = 20.0
 DEFAULT_TOLERANCE_DEG = 2.0
 
+# The gearbox has backlash and the arm carries its own weight, so a joint can
+# stop a few degrees short of its goal and stay there. Accept a still joint
+# inside this band; without it every move waits out the timeout.
+SETTLE_ACCEPT_DEG = 6.0
+SETTLE_STILL_DEG = 0.3
+SETTLE_STABLE_S = 0.4
+
 # Feedback further than this from the trajectory means the bus is out of step.
 FEEDBACK_LAG_DEG = 8.0
 FEEDBACK_LAG_SPEED_FACTOR = 2.0
@@ -104,16 +111,31 @@ def move_joints(robot, targets: dict[str, float], limits: dict[str, tuple[float,
         if index < steps:
             time.sleep(period_s)
     if wait:
+        anchor = None
+        stable_since = 0.0
         while True:
             if stopped():
                 return None
-            if time.monotonic() - begun > timeout_s:
+            now = time.monotonic()
+            if now - begun > timeout_s:
                 raise MotionError("Failed to settle before timeout")
             measured = joint_state(robot)
-            if all(abs(measured[name] - value) <= tolerance_deg for name, value in targets.items()):
+            error = max(abs(measured[name] - value) for name, value in targets.items())
+            if error <= tolerance_deg:
                 if on_step is not None:
                     on_step()
                 return measured
+            if error <= SETTLE_ACCEPT_DEG:
+                if anchor is None or any(
+                        abs(measured[name] - anchor[name]) > SETTLE_STILL_DEG
+                        for name in targets):
+                    anchor = measured
+                    stable_since = now
+                elif now - stable_since >= SETTLE_STABLE_S:
+                    print(f"Settled {error:.1f} deg short of the goal; continuing.")
+                    return measured
+            else:
+                anchor = None
             if on_step is not None:
                 on_step()
             time.sleep(period_s)

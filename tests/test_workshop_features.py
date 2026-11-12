@@ -1,10 +1,7 @@
-"""Every workshop feature that can run without the USB arm or the reCamera."""
+"""Every workshop feature that can run without the USB arm or the RealSense."""
 
 from importlib.metadata import entry_points
 from threading import Thread
-import asyncio
-import json
-import socket
 import time
 
 import numpy as np
@@ -13,9 +10,8 @@ from fastapi.testclient import TestClient
 
 from so101_utils.click_app import click_target
 from so101_utils.config import load_camera, load_hand_eye
-from so101_utils.moves import HOVER_M, PICK_HEIGHT_M, PICK_TOOL_OFFSET_M
+from so101_utils.moves import APPROACH_M, HOVER_M, PICK_HEIGHT_M, PICK_TOOL_OFFSET_M
 from so101_workshop.agent import Agent, load_settings
-from so101_workshop.detections import DetectionBridge, DetectionStore
 from so101_workshop.hooks import NullHook
 from so101_workshop.server import create_app
 from so101_utils import config as station_config
@@ -69,7 +65,7 @@ def _connect(client):
 
 
 def _attach_camera(agent, image=None):
-    intrinsics = load_camera()["intrinsics"]
+    intrinsics = load_camera(station_config.CONFIG / "camera_demo.yaml")["intrinsics"]
     if image is None:
         image = np.zeros((intrinsics.height, intrinsics.width, 3), np.uint8)
         image[10, 10] = (8, 16, 32)
@@ -80,23 +76,32 @@ def _attach_camera(agent, image=None):
     return intrinsics
 
 
-def _reachable_pixel(agent, height_m):
-    """A pixel whose table ray the mock arm can reach with the fingers down."""
+def _reachable_pixel(agent, *heights, approach_m=0.0):
+    """A pixel whose ray the mock arm can reach at every listed height.
+
+    Returns the pixel and a target per height, in the order given. A pick
+    moves to a hover point first, so pass its height with `approach_m` to
+    check that point too.
+    """
     intrinsics = agent.cam.intrinsics
     hand = load_hand_eye()["base_T_camera"]
     state = agent.arm.get_joints()
     width, height = intrinsics.width, intrinsics.height
     for y in range(height // 10, height, height // 6):
         for x in range(width // 10, width, width // 8):
+            targets = [click_target((x, y), intrinsics, hand, h) for h in heights]
+            points = list(targets)
+            if approach_m:
+                points.append(targets[-1] + [0.0, 0.0, approach_m])
             try:
-                target = click_target((x, y), intrinsics, hand, height_m)
-                agent.arm._kin.position_ik(
-                    state, (float(target[0]), float(target[1]), float(target[2])),
-                    agent.arm._limits, downward=True,
-                )
+                for point in points:
+                    agent.arm._kin.position_ik(
+                        state, tuple(float(value) for value in point),
+                        agent.arm._limits, downward=True,
+                    )
             except Exception:
                 continue
-            return x, y, target
+            return x, y, targets
     raise AssertionError("No table pixel was reachable from the mock rest joints")
 
 
@@ -114,7 +119,7 @@ def test_page_lists_the_controls(client):
                   "Z down", "Roll +", "Pitch −", "H · Home", "R · Rest", "Space · Gripper",
                   "Home", "Rest", "Gripper", "Pose", "Step +", "Step −"):
         assert label in page.text
-    assert "no stream" in page.text
+    assert "No stream" in page.text
     viewer = client.get("/api/viewer").json()
     assert viewer["enabled"] is False
     assert client.post("/api/viewer/mode", json={"mode": "hand-eye"}).status_code == 200
@@ -122,10 +127,6 @@ def test_page_lists_the_controls(client):
     ports = client.get("/api/ports")
     assert ports.status_code == 200
     assert isinstance(ports.json()["ports"], list)
-    probe = client.post("/api/probe", json={"host": "127.0.0.1"})
-    assert probe.status_code == 200
-    assert set(probe.json()["ports"]) == {"80", "8090"}
-    assert probe.json()["ports"]["8090"] is False
     status = client.get("/api/status").json()
     assert status["camera"]["connected"] is False
     assert client.hook.statuses == [status["message"]]
@@ -298,7 +299,8 @@ def test_click_cancels_and_pick_uses_the_box_center(client, monkeypatch):
     agent = _connect(client)
     _attach_camera(agent)
     client.post("/api/teleop", json={"action": "tap", "token": "h"})
-    pixel_x, pixel_y, target = _reachable_pixel(agent, HOVER_M)
+    pixel_x, pixel_y, (target, _) = _reachable_pixel(
+        agent, HOVER_M, PICK_HEIGHT_M, approach_m=APPROACH_M)
     agent.arm.set_speed(20)
 
     first = {}
@@ -356,7 +358,8 @@ def test_click_pick_runs_the_pick_at_the_pixel(client, monkeypatch):
     agent = _connect(client)
     _attach_camera(agent)
     client.post("/api/teleop", json={"action": "tap", "token": "h"})
-    pixel_x, pixel_y, target = _reachable_pixel(agent, PICK_HEIGHT_M)
+    pixel_x, pixel_y, (target,) = _reachable_pixel(
+        agent, PICK_HEIGHT_M, approach_m=APPROACH_M)
     agent.arm.set_speed(90)
     monkeypatch.setattr("so101_utils.moves.hold", lambda arm, seconds: None)
     picked = client.post("/api/click-pick", json={"x": pixel_x, "y": pixel_y})
@@ -371,7 +374,8 @@ def test_detect_pick_picks_the_box_centre_not_the_click(client, monkeypatch):
     agent = _connect(client)
     intrinsics = _attach_camera(agent)
     client.post("/api/teleop", json={"action": "tap", "token": "h"})
-    pixel_x, pixel_y, _ = _reachable_pixel(agent, PICK_HEIGHT_M)
+    pixel_x, pixel_y, _ = _reachable_pixel(
+        agent, PICK_HEIGHT_M, approach_m=APPROACH_M)
     agent.arm.set_speed(90)
     monkeypatch.setattr("so101_utils.moves.hold", lambda arm, seconds: None)
     agent.detections.update({
@@ -404,19 +408,18 @@ def test_detect_pick_picks_the_box_centre_not_the_click(client, monkeypatch):
     assert client.post("/api/detect-pick", json={}).status_code == 400
 
 
-def test_boxes_that_ride_the_camera_socket_never_move_the_arm(client):
+def test_yolo_boxes_never_move_the_arm(client):
     agent = _connect(client)
     pose = agent.arm.get_pose()
-    payload = json.dumps({
-        "data": {
-            "boxes": [[1, 2, 3, 4, 92, 0]],
-            "labels": ["cup"],
-            "resolution": [320, 240],
-        },
-    }).encode()
-    agent._on_camera_payload(payload)
+    agent.detections.update({
+        "boxes": [{
+            "x1": 1, "y1": 2, "x2": 3, "y2": 4,
+            "score": 92, "class_id": 0, "label": "cup",
+        }],
+        "resolution": [320, 240],
+    }, source="yolo")
     panel = client.get("/api/detections").json()
-    assert panel["source"] == "recamera"
+    assert panel["source"] == "yolo"
     assert panel["boxes"][0]["label"] == "cup"
     assert panel["resolution"] == [320, 240]
     assert agent.arm.get_pose().x == pose.x
@@ -548,6 +551,27 @@ def test_calibration_routes_do_not_touch_station_files(client, monkeypatch, tmp_
     assert "4" in short.json()["detail"]
 
 
+def test_device_intrinsics_are_reported_and_board_captures_refused(client):
+    agent = _connect(client)
+    intrinsics = load_camera(station_config.CONFIG / "camera_demo.yaml")["intrinsics"]
+
+    class _Device(_Cam):
+        intrinsics_from_device = True
+
+    agent.cam = _Device(np.zeros((intrinsics.height, intrinsics.width, 3), np.uint8), intrinsics)
+    status = client.get("/api/status").json()["camera"]
+    assert status["intrinsics_source"] == "device"
+    assert status["intrinsics"]["fx"] == pytest.approx(intrinsics.fx)
+    assert status["width"] == intrinsics.width and status["height"] == intrinsics.height
+
+    capture = client.post("/api/calibrate/intrinsics/capture")
+    assert capture.status_code == 400
+    assert "from the device" in capture.json()["detail"]
+    solve = client.post("/api/calibrate/intrinsics/solve")
+    assert solve.status_code == 400
+    assert "from the device" in solve.json()["detail"]
+
+
 def test_click_pick_follows_click_and_go_and_detect_also_needs_yolo(client):
     client.post("/api/arm/connect", json={"mock": True})
     agent = client.agent
@@ -588,46 +612,6 @@ def test_flags_keep_estop_and_block_the_rest(monkeypatch):
         assert instructor["detail"]
 
 
-def test_detection_socket_accepts_boxes_and_cannot_move_the_arm(client):
-    agent = _connect(client)
-    pose = agent.arm.get_pose()
-    store = agent.detections
-    port = _free_port()
-    bridge = DetectionBridge(store, {
-        "detections": {"ws_host": "127.0.0.1", "ws_port": port, "mqtt_url": ""},
-    }, client.hook)
-    bridge.start()
-    try:
-        deadline = time.monotonic() + 2
-        while not _port_open(port) and time.monotonic() < deadline:
-            time.sleep(0.02)
-        payload = {
-            "data": {
-                "boxes": [[30, 10, 10, 40, 77, 4]],
-                "labels": ["block"],
-                "resolution": [320, 240],
-                "image": "a" * 5000,
-            },
-        }
-        asyncio.run(_send_json(port, payload))
-        deadline = time.monotonic() + 2
-        while not store.snapshot()["boxes"] and time.monotonic() < deadline:
-            time.sleep(0.02)
-        box = store.snapshot()["boxes"][0]
-        assert box["label"] == "block"
-        assert (box["x1"], box["y1"], box["x2"], box["y2"]) == (25, 0, 35, 30)
-        assert client.hook.boxes
-        assert agent.arm.get_pose().x == pose.x
-        assert not hasattr(bridge, "arm")
-    finally:
-        bridge.close()
-        bridge._thread.join(2)
-
-    empty = DetectionBridge(DetectionStore(), {"detections": {"mqtt_url": "mqtt://"}}, NullHook())
-    empty._start_mqtt()
-    assert "no host" in empty.store.snapshot()["error"]
-
-
 def test_sdk_methods_the_bus_calls_exist():
     import scservo_sdk
     packet = scservo_sdk.PacketHandler(0)
@@ -649,21 +633,3 @@ def _chessboard():
                 y, x = (row + 1) * square, (col + 1) * square
                 board[y:y + square, x:x + square] = 0
     return cv2.cvtColor(board, cv2.COLOR_GRAY2BGR)
-
-
-def _free_port():
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
-
-
-def _port_open(port):
-    with socket.socket() as sock:
-        sock.settimeout(0.05)
-        return sock.connect_ex(("127.0.0.1", port)) == 0
-
-
-async def _send_json(port, payload):
-    import websockets
-    async with websockets.connect(f"ws://127.0.0.1:{port}") as websocket:
-        await websocket.send(json.dumps(payload))
