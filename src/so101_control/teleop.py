@@ -238,7 +238,7 @@ class Teleop:
                 print("Rest.", self.arm.get_pose())
             return True
         if token == "p":
-            print(self.arm.get_pose())
+            print(self.arm.get_pose().readout())
             return True
         if token == "space":
             try:

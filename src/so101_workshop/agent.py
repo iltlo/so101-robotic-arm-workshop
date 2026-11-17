@@ -434,7 +434,7 @@ class Agent:
             elif token == "-":
                 self.message = f"Step {self.teleop.step * 1000:.0f} mm"
             elif token == "p":
-                self.message = repr(self.arm.get_pose())
+                self.message = self.arm.get_pose().readout()
             return self.message
 
         return self.submit(job)
@@ -858,6 +858,21 @@ class Agent:
                 self._tag_detector = tag_detector(tag)
             return find_tag(frame, cam.intrinsics, tag, detector=self._tag_detector)
 
+    def live_pose(self) -> dict:
+        """Position, RPY, and joint angles. No camera, catalog, or viewer checks."""
+        if self.arm is None:
+            return {"connected": False, "pose": None, "joints": None}
+        joints = self.arm.get_joints()
+        current = self.arm.pose_at(joints)
+        return {
+            "connected": True,
+            "pose": {
+                "x": current.x, "y": current.y, "z": current.z,
+                "roll": current.roll, "pitch": current.pitch, "yaw": current.yaw,
+            },
+            "joints": joints,
+        }
+
     def status(self) -> dict:
         pose = None
         joints = None
@@ -882,11 +897,6 @@ class Agent:
                 pose = {
                     "x": current.x, "y": current.y, "z": current.z,
                     "roll": current.roll, "pitch": current.pitch, "yaw": current.yaw,
-                    # w, x, y, z: the one orientation value near pitch ±90.
-                    "quaternion": [float(value) for value in current.quaternion],
-                    # Fingers above the horizontal, + up. This folds at vertical.
-                    # Pitch above is the nod the F/V keys drive, and it passes 90.
-                    "tool_pitch": current.tool_pitch,
                 }
                 limits = {
                     name: [float(low), float(high)]
@@ -1027,6 +1037,31 @@ class Agent:
         self.viewer_mode = mode
         return mode
 
+    def restart_viewer(self) -> dict:
+        """Close the current recording and open a new one.
+
+        The web viewer replays whatever the server still holds. A page reload
+        and the Reload button both need an empty recording.
+        """
+        if not self.viewer_allowed:
+            raise RuntimeError("Rerun was disabled with --no-viewer")
+        with self._viewer_lock:
+            if self._viewer_starting:
+                return self.viewer_status()
+            viewer = self.viewer
+            self.viewer = None
+            self._viewer_generation = ""
+        if self.arm is not None:
+            self.arm.track(None)
+            self.arm.on_target(None)
+            self.arm.on_clear_goal(None)
+        if viewer is not None:
+            try:
+                viewer.close()
+            except Exception:
+                pass
+        return self.start_viewer()
+
     def start_viewer(self) -> dict:
         """Begin opening Rerun in the background and return immediately.
 
@@ -1085,6 +1120,7 @@ class Agent:
                 twin.mark_ee_tool(self.arm.ee_tool_offset)
             self.arm.track(self._draw_viewer)
             self.arm.on_target(self._draw_goal)
+            self.arm.on_clear_goal(self._clear_goal)
 
     def _viewer_live(self) -> bool:
         viewer = self.viewer
@@ -1105,6 +1141,12 @@ class Agent:
                     self._detach_viewer()
                 return
             self.viewer.twin.show_goal_pose(pose)
+
+    def _clear_goal(self) -> None:
+        with self._viewer_draw_lock:
+            if not self._viewer_live():
+                return
+            self.viewer.twin.clear_goal()
 
     def _detach_viewer(self) -> None:
         with self._viewer_draw_lock:

@@ -56,3 +56,11 @@ testpaths = ["tests"]
 
 [tool.uv]
 package = true
+# Default keys only watch pyproject.toml and whether src/ exists. Editing a
+# file inside src/ does not change that, so `uvx --from .` keeps the old wheel.
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "src/**/*.py" },
+    { file = "src/**/*.html" },
+    { file = "assets/**/*.urdf" },
+]

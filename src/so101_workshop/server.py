@@ -70,6 +70,10 @@ def create_app(agent: Agent | None = None, *, listen: bool = False, viewer: bool
     def status():
         return agent.status()
 
+    @app.get("/api/pose")
+    def pose():
+        return agent.live_pose()
+
     @app.get("/api/ports")
     def ports():
         require("connect")
@@ -283,6 +287,10 @@ def create_app(agent: Agent | None = None, *, listen: bool = False, viewer: bool
     @app.post("/api/viewer/start")
     def viewer_start():
         return call(agent.start_viewer)
+
+    @app.post("/api/viewer/restart")
+    def viewer_restart():
+        return call(agent.restart_viewer)
 
     @app.post("/api/viewer/mode")
     def viewer_mode(body: dict):

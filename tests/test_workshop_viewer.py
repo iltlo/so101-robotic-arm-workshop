@@ -3,11 +3,29 @@
 import socket
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
-from so101_utils.views import Twin
+import numpy as np
+
+from so101_utils.views import Twin, _frame_arrows
 from so101_workshop import viewer
 from so101_workshop.agent import Agent
+
+
+def test_the_twin_draws_the_base_frame_and_the_ee():
+    text = Path(__file__).resolve().parents[1].joinpath("src/so101_utils/views.py").read_text()
+    assert 'f"{robot_root}/base_frame"' in text
+    assert "static=True" in text
+    assert 'f"{root}/fk_ee_axes"' in text
+
+
+def test_axis_arrows_carry_no_text():
+    import rerun as rr
+
+    arrows = _frame_arrows(rr, np.eye(4), "goal")
+    assert arrows.labels is None
+    assert "show_labels=[False]" in repr(arrows)
 
 
 def test_rerun_binary_prefers_the_interpreter_environment(tmp_path, monkeypatch):
@@ -232,4 +250,29 @@ def test_each_viewer_start_gets_a_new_generation(monkeypatch):
     agent._open_viewer()
     second = agent.viewer_status()["generation"]
     assert first and second and first != second
+
+
+def test_restart_drops_the_recording_and_opens_a_new_one(monkeypatch):
+    closed = []
+
+    class Stub:
+        url = "http://127.0.0.1:9091/"
+        twin = SimpleNamespace(alive=True)
+
+        def close(self) -> None:
+            closed.append(self)
+
+        def running(self) -> bool:
+            return True
+
+    monkeypatch.setattr(Agent, "_ensure_urdf", lambda self: None)
+    monkeypatch.setattr(viewer, "open_viewer", lambda urdf, intrinsics: Stub())
+    agent = Agent()
+    agent._open_viewer()
+    previous = agent.viewer
+    agent.restart_viewer()
+    agent._viewer_thread.join(timeout=2)
+    assert closed == [previous]
+    assert agent.viewer is not previous
+    assert agent.viewer_status()["generation"]
 

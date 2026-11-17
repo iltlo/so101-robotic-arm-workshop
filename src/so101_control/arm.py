@@ -62,11 +62,13 @@ class Pose:
         # Fingers above the horizontal: what the pitch keys drive, + up.
         self.tool_pitch = float(tool_pitch)
 
-    def __repr__(self) -> str:
+    def readout(self) -> str:
+        """Position and RPY only. The P key prints this."""
         return (f"Pose(x={self.x:.4f} m, y={self.y:.4f} m, z={self.z:.4f} m, "
-                f"roll={self.roll:.1f} deg, pitch={self.pitch:.1f} deg, yaw={self.yaw:.1f} deg, "
-                f"tool_pitch={self.tool_pitch:.1f} deg, "
-                f"q=[{', '.join(f'{value:+.4f}' for value in self.quaternion)}])")
+                f"roll={self.roll:.1f} deg, pitch={self.pitch:.1f} deg, yaw={self.yaw:.1f} deg)")
+
+    def __repr__(self) -> str:
+        return self.readout()
 
 
 class SO101:
@@ -88,6 +90,7 @@ class SO101:
         self._target_rotation = None
         self._on_motion = None
         self._on_target = None
+        self._on_clear_goal = None
         self.torque_on = True
         offset = float(ee_tool_offset)
         if not math.isfinite(offset):
@@ -151,9 +154,13 @@ class SO101:
             pass
 
     def track(self, callback) -> None:
-        """Call `callback()` on connect and after every motion step."""
+        """Call `callback()` on connect and after every motion step.
+
+        `None` stops the updates.
+        """
         self._on_motion = callback
-        callback()
+        if callback is not None:
+            callback()
 
     def refresh(self) -> None:
         """Run the `track` callback once, if one is registered."""
@@ -163,6 +170,15 @@ class SO101:
     def on_target(self, callback) -> None:
         """Call `callback(pose)` with the 4x4 goal pose solved by each `move_to`."""
         self._on_target = callback
+
+    def on_clear_goal(self, callback) -> None:
+        """Call `callback()` when home or rest drops the drawn goal."""
+        self._on_clear_goal = callback
+
+    def _drop_goal_marker(self) -> None:
+        callback = self._on_clear_goal
+        if callback is not None:
+            callback()
 
     def set_speed(self, deg_per_s: float) -> None:
         """Joint speed for later moves, in degrees per second (1 to 90)."""
@@ -325,6 +341,7 @@ class SO101:
 
     def home(self, *, wait: bool = True, cancel=None) -> bool:
         """Move to the calibrated midpoint: every arm joint at 0 degrees."""
+        self._drop_goal_marker()
         return self._move({name: 0.0 for name in JOINTS}, wait=wait, cancel=cancel)
 
     def rest(self, *, wait: bool = True, cancel=None) -> bool:
@@ -333,6 +350,7 @@ class SO101:
         shoulder_lift -90°, elbow_flex 90°, wrist_flex 45°, pan and roll at 0°.
         Returns False when `cancel` stops the fold.
         """
+        self._drop_goal_marker()
         arrived = self._move(dict(REST_JOINTS), wait=wait, cancel=cancel)
         if arrived:
             self.grip()

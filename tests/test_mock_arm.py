@@ -155,6 +155,23 @@ def test_spin_wrist_turns_the_gripper_and_pitch_passes_90():
         assert arm.get_pose().pitch == pytest.approx(113.0, abs=0.5)
 
 
+def test_the_pose_key_readout_is_position_and_rpy():
+    with SO101.connect(mock=True) as arm:
+        text = arm.get_pose().readout()
+        assert "tool_pitch" not in text
+        assert "q=" not in text
+        assert "roll=" in text and "pitch=" in text and "yaw=" in text
+
+
+def test_home_and_rest_clear_the_goal_marker():
+    with SO101.connect(mock=True) as arm:
+        cleared = []
+        arm.on_clear_goal(lambda: cleared.append("clear"))
+        arm.home(wait=False)
+        arm.rest(wait=False)
+        assert cleared == ["clear", "clear"]
+
+
 def test_the_pose_reports_the_tool_pitch_the_keys_drive():
     with SO101.connect(mock=True) as arm:
         pose = arm.get_pose()

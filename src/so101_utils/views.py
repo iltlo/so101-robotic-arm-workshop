@@ -32,7 +32,8 @@ _CAMERA = "camera/rgb"
 
 _AXIS_RADIUS_M = 0.003
 _GOAL_AXIS_M = 0.07
-_FK_AXIS_M = 0.05
+_BASE_AXIS_M = 0.10
+_FK_AXIS_M = 0.08
 _TOOL_AXIS_M = 0.04
 _LINK_AXIS_M = 0.035
 _TAG_AXIS_M = 0.03
@@ -50,15 +51,15 @@ _DEMO_POSES = ({}, {"shoulder_pan": 25.0}, {"elbow_flex": -20.0},
                {"gripper": GRIPPER_OPEN_PERCENT}, {"gripper": GRIPPER_CLOSED_PERCENT})
 
 
-def _frame_arrows(rr, pose, label, *, length=_FK_AXIS_M):
-    """RGB axes at a 4x4 pose in the base frame."""
+def _frame_arrows(rr, pose, _label, *, length=_FK_AXIS_M):
+    """RGB axes at a 4x4 pose in the base frame, with no text on the axes."""
     pose = np.asarray(pose, dtype=float)
     return rr.Arrows3D(
         origins=np.repeat(pose[:3, 3][None, :], 3, axis=0),
         vectors=pose[:3, :3].T * length,
         colors=[list(color) for color in _AXIS_COLORS],
         radii=[_AXIS_RADIUS_M] * 3,
-        labels=[f"{label} X", f"{label} Y", f"{label} Z"],
+        show_labels=False,
     )
 
 
@@ -173,6 +174,8 @@ class Twin:
         # metres, so it sits next to base_link without a further transform.
         robot_root = f"/{self.tree.name}"
         rr.log(robot_root, rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
+        rr.log(f"{robot_root}/base_frame",
+               _frame_arrows(rr, np.eye(4), "base", length=_BASE_AXIS_M), static=True)
 
         for name, color in zip(JOINTS, _JOINT_COLORS):
             rr.log(f"telemetry/joints/{name}", rr.SeriesLines(names=name, colors=color), static=True)
@@ -241,6 +244,15 @@ class Twin:
                 [0.0, 0.0, self.ee_tool_offset])
         self.rr.log(f"/{self.tree.name}/hover_goal",
                     _frame_arrows(self.rr, drawn, "goal", length=_GOAL_AXIS_M))
+        self.flush()
+
+    def clear_goal(self) -> None:
+        """Remove the goal axes. Home and rest leave no target pose."""
+        if not self.alive:
+            return
+        self.tick += 1
+        self.rr.set_time("tick", sequence=self.tick)
+        self.rr.log(f"/{self.tree.name}/hover_goal", self.rr.Clear(recursive=False))
         self.flush()
 
     def update(self, state: dict[str, float], *, ee_pose=None, flexion_axis=None) -> None:
@@ -324,6 +336,7 @@ def watch_arm(arm, urdf: str | Path, *, intrinsics=None) -> Twin:
         twin.mark_ee_tool(arm.ee_tool_offset)
     arm.track(lambda: twin.show(arm))
     arm.on_target(twin.show_goal_pose)
+    arm.on_clear_goal(twin.clear_goal)
     return twin
 
 

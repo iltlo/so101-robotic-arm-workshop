@@ -30,6 +30,19 @@ def test_run_help_exits_cleanly():
     assert caught.value.code == 0
 
 
+def test_pose_poll_is_position_and_rpy_only(client):
+    assert client.post("/api/arm/connect", json={"mock": True}).status_code == 200
+    started = time.monotonic()
+    for _ in range(30):
+        body = client.get("/api/pose").json()
+    elapsed = time.monotonic() - started
+    pose = body["pose"]
+    assert set(pose) == {"x", "y", "z", "roll", "pitch", "yaw"}
+    assert "tool_pitch" not in body["pose"]
+    assert "quaternion" not in body["pose"]
+    assert elapsed < 1.0
+
+
 def test_status_starts_disconnected(client):
     from so101_utils.moves import APPROACH_M, HOVER_M, PICK_HEIGHT_M
     body = client.get("/api/status").json()

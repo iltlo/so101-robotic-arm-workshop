@@ -27,6 +27,19 @@ def station(tmp_path, monkeypatch):
     return config
 
 
+def test_the_pose_card_explains_rpy_and_the_viewer_reloads_clean():
+    text = PAGE.read_text()
+    assert "Relative to the arm base frame." in text
+    assert "Yaw is the EE heading around the base Z axis." in text
+    assert "positive points the fingers down." in text
+    assert "Roll is the twist around the EE." in text
+    assert "setInterval(refreshPose, 100)" in text
+    assert "pose-tool-pitch" not in text
+    assert "pose-quaternion" not in text
+    assert 'api("/api/viewer/restart"' in text
+    assert "restartViewer()" in text
+
+
 def test_page_features_match_the_routes():
     """Each task tab lists the same flags the API checks before it moves."""
     text = PAGE.read_text()

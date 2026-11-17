@@ -758,9 +758,8 @@
             <div><span>Roll °</span><b id="pose-roll">—</b></div>
             <div><span>Pitch °</span><b id="pose-pitch">—</b></div>
             <div><span>Yaw °</span><b id="pose-yaw">—</b></div>
-            <div class="wide"><span>Tool pitch ° (+ up)</span><b id="pose-tool-pitch">—</b></div>
-            <div class="wide"><span>Quaternion w, x, y, z</span><b id="pose-quaternion">—</b></div>
           </div>
+          <p class="hint" style="margin-top:8px">Relative to the arm base frame. Yaw is the EE heading around the base Z axis. Pitch is the tilt from level in that heading, and positive points the fingers down. Roll is the twist around the EE.</p>
           <table style="margin-top:12px">
             <thead><tr><th>Joint</th><th>Deg</th><th>Limits</th></tr></thead>
             <tbody id="joints"></tbody>
@@ -889,6 +888,7 @@
     viewerGeneration: "",
     localUntil: 0,
     statusBusy: false,
+    poseBusy: false,
     statusFailures: 0,
     cameraConnected: false,
     previewBusy: false,
@@ -1085,12 +1085,6 @@
     $("pose-roll").textContent = pose.roll == null ? "—" : Number(pose.roll).toFixed(1);
     $("pose-pitch").textContent = pose.pitch == null ? "—" : Number(pose.pitch).toFixed(1);
     $("pose-yaw").textContent = pose.yaw == null ? "—" : Number(pose.yaw).toFixed(1);
-    $("pose-tool-pitch").textContent = pose.tool_pitch == null
-      ? "—" : Number(pose.tool_pitch).toFixed(1);
-    const quat = pose.quaternion;
-    $("pose-quaternion").textContent = Array.isArray(quat) && quat.length === 4
-      ? quat.map((value) => Number(value).toFixed(3)).join(", ")
-      : "—";
   }
 
   function renderJoints(arm) {
@@ -1313,6 +1307,21 @@
     }
     $("gripper-state").textContent = teleop.gripper_closed == null
       ? "—" : teleop.gripper_closed ? "closed" : "open";
+  }
+
+  async function refreshPose() {
+    if (state.poseBusy) return;
+    state.poseBusy = true;
+    try {
+      const data = await api("/api/pose");
+      const limits = state.status && state.status.arm ? state.status.arm.limits : null;
+      renderPose({ pose: data.pose });
+      renderJoints({ joints: data.joints, limits });
+    } catch (error) {
+      // The full status poll reports a dead server. A missed pose read does not.
+    } finally {
+      state.poseBusy = false;
+    }
   }
 
   async function refreshStatus() {
@@ -2002,6 +2011,22 @@
 
   let viewerTimer = 0;
 
+  async function restartViewer() {
+    state.viewerUrl = "";
+    state.viewerGeneration = "";
+    const frame = $("rerun");
+    frame.removeAttribute("src");
+    frame.hidden = true;
+    $("rerun-empty").hidden = false;
+    try {
+      const current = await api("/api/viewer");
+      if (current.allowed !== false) await api("/api/viewer/restart", {});
+    } catch (error) {
+      $("rerun-note").textContent = error.message || String(error);
+    }
+    refreshViewer();
+  }
+
   async function refreshViewer(force = false) {
     clearTimeout(viewerTimer);
     try {
@@ -2044,7 +2069,7 @@
     if (data) $("rerun-note").textContent = data.detail;
     await refreshViewer(true);
   });
-  $("rerun-reload").addEventListener("click", () => refreshViewer(true));
+  $("rerun-reload").addEventListener("click", () => restartViewer());
 
   /* ---------------- websocket ---------------- */
 
@@ -2105,9 +2130,10 @@
   loadCameras().catch(() => {
     $("camera-detail").textContent = "Camera profiles are unavailable.";
   });
-  refreshViewer();
+  restartViewer();
   refreshDetections();
 
+  setInterval(refreshPose, 100);
   setInterval(refreshStatus, 800);
   setInterval(refreshDetections, 600);
   setInterval(refreshViewer, 3000);
