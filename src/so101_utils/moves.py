@@ -50,7 +50,7 @@ def pick_and_return(arm, view, target, dwell_s: float = DWELL_S, *,
                     approach_m: float = APPROACH_M,
                     close_delay_s: float = DWELL_S,
                     open_delay_s: float = DWELL_S) -> bool:
-    """Hover above target, move down, rest, and open.
+    """Open the gripper, hover above target, move down, rest, and open.
 
     Both poses point the fingers straight down; the twist is re-solved on the way
     down. `approach_m` is the hover height above the target. `close_delay_s` and
@@ -59,6 +59,8 @@ def pick_and_return(arm, view, target, dwell_s: float = DWELL_S, *,
     """
     x, y, z = float(target[0]), float(target[1]), float(target[2])
     hover_z = z + approach_m
+    view.report("Opening gripper")
+    arm.release()
     view.report(f"Moving above the pick: {x:.3f}, {y:.3f}, {hover_z:.3f} m")
     if not _down_to(arm, view, x, y, hover_z):
         return False

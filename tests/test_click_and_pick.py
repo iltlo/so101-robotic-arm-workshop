@@ -150,11 +150,13 @@ def test_pick_stops_above_then_comes_straight_down():
         assert calls[0][3] is None and calls[0][4] is True
         assert calls[1][:3] == pytest.approx(pick)
         assert calls[1][3] is None and calls[1][4] is True
+        assert view.messages.index("Opening gripper") < view.messages.index("Closing gripper")
         assert view.messages.index("Holding the pick") < view.messages.index("Closing gripper")
         assert view.messages.index("Holding the grasp") < view.messages.index("Returning to rest")
-        assert seen[0][0] == "grip"
-        assert np.linalg.norm([seen[0][1] - pick[0], seen[0][2] - pick[1], seen[0][3] - pick[2]]) < 0.015
-        assert seen[0][4] < -0.95
+        assert seen[0][0] == "release"
+        closed = next(event for event in seen if event[0] == "grip")
+        assert np.linalg.norm([closed[1] - pick[0], closed[2] - pick[1], closed[3] - pick[2]]) < 0.015
+        assert closed[4] < -0.95
         opened = seen[-1]
         assert opened[0] == "release"
         assert opened[1] == pytest.approx(0.0)
@@ -196,8 +198,33 @@ def test_a_missed_pick_does_not_close_or_go_to_rest():
             raise AssertionError("went to rest")
 
         def release(self):
-            raise AssertionError("gripper opened")
+            self.opened = True
 
+    arm = _Arm()
     view = _View()
-    module.pick_and_return(_Arm(), view, (0.2, 0.0, 0.02))
+    module.pick_and_return(arm, view, (0.2, 0.0, 0.02))
+    assert arm.opened
+    assert view.messages[0] == "Opening gripper"
     assert view.messages[-1] == "Did not reach the pick"
+
+
+def test_pick_opens_the_gripper_before_it_moves():
+    from so101_utils.moves import pick_and_return
+
+    with SO101.connect(mock=True) as arm:
+        arm.grip()
+        at_first_move = []
+        move_to = arm.move_to
+
+        def moved(x, y, z, roll=None, pitch=None, yaw=None, wait=True, cancel=None,
+                  downward=False):
+            at_first_move.append(arm.get_joints()["gripper"])
+            return move_to(
+                x, y, z, roll, pitch, yaw, wait=wait, cancel=cancel, downward=downward)
+
+        arm.move_to = moved
+        pick_and_return(
+            arm, _View(), (0.2, 0.0, 0.05),
+            dwell_s=0, close_delay_s=0, open_delay_s=0,
+        )
+        assert at_first_move[0] == pytest.approx(OPEN_PERCENT)
