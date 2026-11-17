@@ -17,6 +17,8 @@ dependencies = [
     "opencv-python>=4.11,<5",
     "fastapi>=0.115",
     "uvicorn>=0.32",
+    # uvicorn refuses a browser websocket upgrade unless this is installed.
+    "websockets>=13",
     "pyserial>=3.5,<4",
     "feetech-servo-sdk>=1.0.0",
     # No macOS wheel. macOS runs the demo profile only.

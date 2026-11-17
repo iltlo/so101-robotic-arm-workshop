@@ -265,6 +265,12 @@ def test_moving_outside_teleop_forgets_its_target(client):
     assert agent.arm._sent is None
 
 
+def test_uvicorn_can_accept_a_browser_websocket():
+    from uvicorn.protocols.websockets.auto import AutoWebSocketsProtocol
+
+    assert AutoWebSocketsProtocol is not None
+
+
 def test_websocket_estop_and_camera_disconnect(client):
     agent = _connect(client)
     with client.websocket_connect("/api/ws") as socket:
