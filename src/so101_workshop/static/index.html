@@ -117,15 +117,6 @@
   nav button:hover:not(.active) { background: #151922; color: var(--ink); }
   nav button.active { background: var(--panel-2); color: var(--ink); box-shadow: inset 2px 0 0 var(--accent); }
   nav button:disabled { background: transparent; }
-  .nav-note {
-    margin-top: auto;
-    padding: 12px;
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    color: var(--muted);
-    font-size: 12px;
-  }
-  .nav-note b { color: var(--ink); }
 
   .workspace {
     min-width: 0;
@@ -321,6 +312,10 @@
   .guide-body .row { margin-top: 8px; }
   .track { height: 5px; border-radius: 99px; background: #202633; overflow: hidden; margin: 9px 0 14px; }
   .track > div { height: 100%; width: 0; background: var(--accent); transition: width 0.25s ease; }
+  .bins { display: flex; gap: 3px; height: 8px; margin: 12px 0 8px; }
+  .bins i { flex: 1; border-radius: 2px; background: #202633; }
+  .bins i.ok { background: var(--accent); }
+  .bins i.fail { background: var(--danger); }
   ol.samples { margin: 8px 0 12px; padding: 0; list-style: none; display: grid; gap: 5px; }
   ol.samples li {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -502,7 +497,6 @@
     .group { display: none; }
     nav { display: flex; flex-wrap: wrap; gap: 4px; }
     nav button { width: auto; }
-    .nav-note { display: none; }
     .topbar { flex-wrap: wrap; }
     .layout { padding: 12px; }
     .grid-4, .stat-grid, .split, .grid-2 { grid-template-columns: 1fr 1fr; }
@@ -527,7 +521,6 @@
     <button type="button" data-page="pick">Click and pick</button>
     <button type="button" data-page="detect">Detect and pick</button>
   </nav>
-  <div class="nav-note"><b>Local only.</b> The arm, the camera, and E-stop run in this process. Nothing here needs the cloud.</div>
 </aside>
 
 <div class="workspace">
@@ -640,7 +633,7 @@
             <button class="btn good" id="camera-connect" type="button">Connect camera</button>
             <button class="btn" id="camera-disconnect" type="button">Disconnect camera</button>
           </div>
-          <p class="hint" style="margin-top:10px">RealSense intrinsics are read from the camera when it opens. Demo is synthetic and needs no hardware.</p>
+          <p class="hint" style="margin-top:10px">A D405 uses the intrinsics in its profile. Another RealSense reads them from the device once the vision extra is installed. Demo is synthetic and needs no hardware.</p>
         </article>
 
         </article>
@@ -658,7 +651,7 @@
         <article class="card">
           <div class="card-head"><h2>Automatic calibration</h2><span class="hint" id="auto-count">idle</span></div>
           <p class="hint">Ten fixed poses. The arm moves by itself, so keep the area clear.</p>
-          <div class="track" style="margin:12px 0 8px"><div id="auto-bar"></div></div>
+          <div class="bins" id="auto-bins"></div>
           <p class="hint" id="auto-result" style="margin-top:6px">Connect the arm and the camera, then turn torque on.</p>
           <div class="row" style="margin-top:10px">
             <button class="btn good" id="auto-tag" type="button">Run auto calibration</button>
@@ -794,6 +787,7 @@
         <article class="card">
           <div class="card-head"><h2>Detect and pick</h2><span class="hint" id="detect-busy"></span></div>
           <p class="hint">Click inside a box. The arm picks its centre.</p>
+          <p class="hint" id="detect-source">Detection: reCamera.</p>
           <div class="live-wrap">
             <div class="live-slot" id="slot-detect"></div>
             <canvas id="detect-overlay" class="box-overlay"></canvas>
@@ -878,6 +872,7 @@
     boxes: [],
     resolution: null,
     handSig: "",
+    autoBinSig: "",
     viewerMode: "",
     featuresSig: "",
     features: null,
@@ -1109,6 +1104,26 @@
     });
   }
 
+  function renderAutoBins(results, total) {
+    const bins = $("auto-bins");
+    const sig = `${total}:${results.join(",")}`;
+    if (sig === state.autoBinSig) return;
+    state.autoBinSig = sig;
+    bins.replaceChildren();
+    for (let index = 0; index < total; index += 1) {
+      const bin = document.createElement("i");
+      const outcome = results[index];
+      if (outcome === "ok") bin.className = "ok";
+      else if (outcome === "fail") bin.className = "fail";
+      bin.title = outcome === "ok"
+        ? `Pose ${index + 1} captured`
+        : outcome === "fail"
+          ? `Pose ${index + 1} failed`
+          : `Pose ${index + 1}`;
+      bins.append(bin);
+    }
+  }
+
   function renderHandEye(status) {
     const samples = status.hand_eye_samples || [];
     const arm = status.arm || {};
@@ -1148,14 +1163,14 @@
 
     const auto = status.auto_hand_eye || {};
     const autoRunning = Boolean(auto.running);
-    const autoTotal = Math.max(Number(auto.total) || 0, 1);
-    const captured = Number(auto.captured) || 0;
+    const results = Array.isArray(auto.results) ? auto.results : [];
+    const autoTotal = Number(auto.total) || results.length || 0;
     $("auto-count").textContent = autoRunning
       ? `${auto.step || 0} / ${autoTotal}`
       : auto.error ? "failed"
         : auto.cancelled ? "stopped"
           : auto.residual_m != null ? "saved" : "idle";
-    $("auto-bar").style.width = `${Math.min(captured / autoTotal, 1) * 100}%`;
+    renderAutoBins(results, autoTotal);
     $("auto-result").textContent = auto.error || auto.message
       || "Connect the arm and the camera, then turn torque on.";
     $("auto-result").className = "hint"
@@ -1873,10 +1888,12 @@
         return;
       }
       const boxes = data.boxes || [];
+      const local = data.detector === "local";
+      const mode = local ? "local YOLO" : "reCamera";
+      $("detect-source").textContent = `Detection: ${mode}.`;
       const age = data.age_s == null ? "no boxes yet" : `${Number(data.age_s).toFixed(1)} s ago`;
       const resolution = data.resolution ? ` · ${data.resolution[0]}×${data.resolution[1]}` : "";
-      const source = data.source ? ` from ${data.source}` : "";
-      const status = data.error || `${boxes.length} boxes${source} · ${age}${resolution}`;
+      const status = data.error || `${boxes.length} boxes from ${mode} · ${age}${resolution}`;
       $("det-status").textContent = status;
       renderBoxes(boxes, data.resolution);
       drawDetectBoxes();
@@ -1898,7 +1915,7 @@
       const td = document.createElement("td");
       td.colSpan = 4;
       td.className = "hint";
-      td.textContent = "Waiting for YOLO boxes.";
+      td.textContent = "Waiting for boxes.";
       tr.append(td);
       body.append(tr);
       return;

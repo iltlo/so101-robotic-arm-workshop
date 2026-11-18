@@ -4,6 +4,7 @@ from importlib.util import find_spec
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Event, Lock, RLock, Thread, current_thread
+import json
 import time
 import uuid
 
@@ -37,7 +38,7 @@ from so101_utils.moves import (
 from so101_utils.ports import get_ports, port_that_vanished, write_port
 from so101_utils.tags import find_tag
 from so101_utils.transforms import MIN_POSES, Sample, solve_eye_to_hand
-from so101_workshop.detections import DetectionStore
+from so101_workshop.detections import DetectionBridge, DetectionStore, parse_detections
 from so101_workshop.hooks import NullHook
 from so101_workshop.yolo import DEFAULT_CONFIDENCE, YoloWorker
 
@@ -70,6 +71,8 @@ def load_settings() -> dict:
             if name in raw:
                 features[name] = bool(raw[name])
     data["features"] = features
+    data.setdefault("detector", "recamera")
+    data.setdefault("detections", {})
     data.setdefault("yolo_model", "detection/model/demo.pt")
     data.setdefault("yolo_confidence", DEFAULT_CONFIDENCE)
     return data
@@ -104,6 +107,7 @@ class Agent:
         self._estop_applied = False
         self.detections = DetectionStore()
         self._detector = None
+        self._bridge = None
         self._queue: Queue = Queue()
         self._stop = Event()
         self._worker = None
@@ -159,17 +163,28 @@ class Agent:
             self._viewer_tick_thread.start()
 
     def start_detectors(self) -> None:
-        if not self.features.get("yolo", True) or self._detector is not None:
+        if not self.features.get("yolo", True):
             return
-        model = Path(str(self.settings.get("yolo_model") or "detection/model/demo.pt"))
-        if not model.is_absolute():
-            model = station_config.ROOT / model
-        self._detector = YoloWorker(
-            self.detections, self.hook,
-            model_path=model,
-            confidence=float(self.settings.get("yolo_confidence") or DEFAULT_CONFIDENCE),
-        )
-        self._detector.start()
+        kind = str(self.settings.get("detector") or "recamera")
+        if kind == "local":
+            if self._detector is not None:
+                return
+            model = Path(str(self.settings.get("yolo_model") or "detection/model/demo.pt"))
+            if not model.is_absolute():
+                model = station_config.ROOT / model
+            self._detector = YoloWorker(
+                self.detections, self.hook,
+                model_path=model,
+                confidence=float(self.settings.get("yolo_confidence") or DEFAULT_CONFIDENCE),
+            )
+            self._detector.start()
+            return
+        if kind != "recamera":
+            raise ValueError(f"Unknown detector {kind}")
+        if self._bridge is not None:
+            return
+        self._bridge = DetectionBridge(self.detections, self.settings, self.hook)
+        self._bridge.start()
 
     def close(self) -> None:
         if self._closed:
@@ -193,6 +208,8 @@ class Agent:
             pass
         if self._detector is not None:
             self._detector.close()
+        if self._bridge is not None:
+            self._bridge.close()
         if self._worker is not None:
             self._worker.join(timeout=2)
         self.disconnect_camera()
@@ -287,7 +304,7 @@ class Agent:
         return load_camera(self.camera_path())
 
     def camera_profiles(self) -> list[dict]:
-        """Every RealSense or demo profile in the station."""
+        """Every camera profile in the station."""
         active = self.camera_path()
         profiles = []
         for path in sorted(Path(station_config.CONFIG).glob("camera*.yaml")):
@@ -550,11 +567,17 @@ class Agent:
         return bool(self.cam is not None
                     and getattr(self.cam, "intrinsics_from_device", False))
 
+    def _refuse_realsense_board(self, *, solving: bool) -> None:
+        """A connected RealSense does not take a chessboard calibration."""
+        tail = "nothing to solve" if solving else "no board captures are needed"
+        cam = self.cam
+        if cam is not None and getattr(cam, "intrinsics_from_device", False):
+            raise RuntimeError(f"RealSense intrinsics come from the device; {tail}")
+        if cam is not None and getattr(cam, "profile_intrinsics", False):
+            raise RuntimeError(f"D405 intrinsics come from the camera profile; {tail}")
+
     def capture_intrinsics(self) -> int:
-        if self._device_intrinsics():
-            raise RuntimeError(
-                "RealSense intrinsics come from the device; no board captures are needed"
-            )
+        self._refuse_realsense_board(solving=False)
         frame = self.latest_bgr()
         if frame is None:
             raise RuntimeError("Camera image is not ready")
@@ -579,10 +602,7 @@ class Agent:
         }
 
     def solve_intrinsics(self) -> dict:
-        if self._device_intrinsics():
-            raise RuntimeError(
-                "RealSense intrinsics come from the device; nothing to solve"
-            )
+        self._refuse_realsense_board(solving=True)
         frame = self.latest_bgr()
         if frame is None:
             raise RuntimeError("Camera image is not ready")
@@ -680,10 +700,12 @@ class Agent:
             if self._auto_run is None:
                 return {
                     "running": False, "step": 0, "total": len(calibration_poses()),
-                    "captured": 0, "message": "", "error": None, "cancelled": False,
-                    "residual_m": None, "residual_deg": None,
+                    "captured": 0, "results": [], "message": "", "error": None,
+                    "cancelled": False, "residual_m": None, "residual_deg": None,
                 }
-            return dict(self._auto_run)
+            status = dict(self._auto_run)
+            status["results"] = list(status.get("results") or [])
+            return status
 
     def start_auto_hand_eye(self) -> dict:
         """Queue the fixed-pose tour and return before the arm starts moving."""
@@ -705,7 +727,8 @@ class Agent:
             self._auto_cancel.clear()
             self._auto_run = {
                 "running": True, "step": 0, "total": len(calibration_poses()),
-                "captured": 0, "message": "Starting the auto hand-eye tour",
+                "captured": 0, "results": [],
+                "message": "Starting the auto hand-eye tour",
                 "error": None, "cancelled": False,
                 "residual_m": None, "residual_deg": None,
             }
@@ -732,6 +755,15 @@ class Agent:
         with self._auto_lock:
             if self._auto_run is not None:
                 self._auto_run.update(fields)
+
+    def _auto_record(self, outcome: str, **fields) -> None:
+        with self._auto_lock:
+            if self._auto_run is None:
+                return
+            results = list(self._auto_run.get("results") or [])
+            results.append(outcome)
+            self._auto_run["results"] = results
+            self._auto_run.update(fields)
 
     def _finish_auto_hand_eye(self, **fields) -> None:
         with self._auto_lock:
@@ -810,14 +842,14 @@ class Agent:
                 return False
             sample = self._auto_sample()
             if sample is None:
-                self._auto_update(
-                    captured=len(samples),
-                    message=f"Pose {index} of {len(poses)}: no tag in view, skipped",
+                self._auto_record(
+                    "fail", captured=len(samples),
+                    message=f"Pose {index} of {len(poses)}: no tag in view",
                 )
                 continue
             samples.append(sample)
-            self._auto_update(
-                captured=len(samples),
+            self._auto_record(
+                "ok", captured=len(samples),
                 message=f"Pose {index} of {len(poses)}: {len(samples)} samples",
             )
         return True
@@ -1284,10 +1316,36 @@ class Agent:
             except Exception as exc:
                 self.viewer_error = str(exc)
 
+    def _uses_recamera_boxes(self) -> bool:
+        return str(self.settings.get("detector") or "recamera") == "recamera"
+
+    def _on_camera_payload(self, raw) -> None:
+        """YOLO boxes that arrive with the same reCamera JPEG frame."""
+        try:
+            text = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw
+            payload = json.loads(text)
+        except (UnicodeDecodeError, TypeError, json.JSONDecodeError):
+            return
+        if not isinstance(payload, dict):
+            return
+        data = payload.get("data", payload)
+        if not isinstance(data, dict) or "boxes" not in data:
+            return
+        try:
+            parsed = parse_detections(payload)
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return
+        self.detections.update(parsed, source="recamera")
+        try:
+            self.hook.on_detections(parsed["boxes"])
+        except Exception:
+            pass
+
     def _open_camera(self, cfg: dict) -> None:
         from so101_utils.camera import open_camera
         try:
-            context = open_camera(cfg)
+            on_payload = self._on_camera_payload if self._uses_recamera_boxes() else None
+            context = open_camera(cfg, on_payload=on_payload)
             cam = context.__enter__()
         except Exception as exc:
             self.camera_error = str(exc)

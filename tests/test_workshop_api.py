@@ -127,6 +127,17 @@ def test_detections_panel_is_empty_until_yolo_reports(client):
     body = client.get("/api/detections").json()
     assert body["enabled"] is True
     assert body["boxes"] == []
+    assert body["detector"] == "recamera"
+
+
+def test_a_recamera_frame_stores_its_boxes(client):
+    client.agent._on_camera_payload(
+        '{"data": {"boxes": [[10, 12, 6, 4, 80, 1]], "labels": ["cup"], "resolution": [100, 80]}}'
+    )
+    body = client.get("/api/detections").json()
+    assert body["source"] == "recamera"
+    assert body["boxes"][0]["label"] == "cup"
+    assert body["boxes"][0]["x1"] == 7
 
 
 def test_estop_blocks_a_later_jog(client):
@@ -191,10 +202,33 @@ def test_auto_hand_eye_tour_saves_ten_poses(client, monkeypatch):
     assert auto["error"] is None, auto
     assert auto["cancelled"] is False
     assert auto["captured"] == len(agent_module.calibration_poses()) == 10
+    assert auto["results"] == ["ok"] * 10
     assert auto["residual_m"] < 1e-6
     assert len(saved) == 1
     status = client.get("/api/status").json()
     assert len(status["hand_eye_samples"]) == 10
+
+
+def test_a_missed_tag_marks_that_pose_failed(client, monkeypatch):
+    agent, saved = _prepare_auto(client, monkeypatch)
+    seen = {"n": 0}
+    detect = agent._detect_tag
+
+    def miss_the_third(frame):
+        seen["n"] += 1
+        if seen["n"] == 3:
+            raise ValueError("no tag")
+        return detect(frame)
+
+    monkeypatch.setattr(agent, "_detect_tag", miss_the_third)
+    assert client.post("/api/calibrate/hand-eye/auto").status_code == 200
+
+    auto = _wait_auto(client)
+    assert auto["error"] is None, auto
+    assert auto["results"][2] == "fail"
+    assert auto["results"].count("ok") == 9
+    assert auto["captured"] == 9
+    assert len(saved) == 1
 
 
 def test_estop_stops_auto_hand_eye(client, monkeypatch):

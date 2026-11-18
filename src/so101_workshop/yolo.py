@@ -107,7 +107,7 @@ class YoloDetector:
             from ultralytics import YOLO
         except ImportError as exc:
             raise RuntimeError(
-                "ultralytics is not installed; install the workshop dependencies"
+                "ultralytics is not installed; install the yolo extra: uv sync --extra yolo"
             ) from exc
         self._model = YOLO(str(self.model_path), verbose=False)
         self._names = getattr(self._model, "names", {}) or {}

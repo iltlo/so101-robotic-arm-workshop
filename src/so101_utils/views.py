@@ -35,7 +35,6 @@ _GOAL_AXIS_M = 0.07
 _BASE_AXIS_M = 0.10
 _FK_AXIS_M = 0.08
 _TOOL_AXIS_M = 0.04
-_LINK_AXIS_M = 0.035
 _TAG_AXIS_M = 0.03
 _CAMERA_AXIS_M = 0.04
 _TOOL_POINT_RADIUS_M = 0.007
@@ -289,6 +288,7 @@ class Twin:
             # apart after a local tool-frame edit.
             root = f"/{self.tree.name}"
             self.rr.log(f"{root}/fk_ee_axes", _frame_arrows(self.rr, pose, "fk"))
+            self.rr.log(f"{root}/gripper_link_axes", self.rr.Clear(recursive=False))
             if self.ee_tool_offset:
                 tip = xyz + pose[:3, :3] @ np.array([0.0, 0.0, self.ee_tool_offset])
                 tip_pose = np.eye(4)
@@ -386,8 +386,7 @@ def log_hand_eye(twin, image_bgr, arm, tag, base_T_camera=None, detector=None):
     root = f"/{twin.tree.name}"
     rr = twin.rr
     rr.log(f"{root}/fk_ee_axes", _frame_arrows(rr, tool, "tool"))
-    rr.log(f"{root}/gripper_link_axes",
-           _frame_arrows(rr, base_T_gripper, "link", length=_LINK_AXIS_M))
+    rr.log(f"{root}/gripper_link_axes", rr.Clear(recursive=False))
     mount = tag.gripper_T_tag
     rr.log(f"{twin.tree.link_entity('gripper_link')}/tag_mount", rr.Transform3D(
         translation=mount[:3, 3], mat3x3=mount[:3, :3]))

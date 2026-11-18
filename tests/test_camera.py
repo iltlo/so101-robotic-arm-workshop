@@ -5,34 +5,34 @@ import time
 import numpy as np
 import pytest
 
-from so101_utils.camera import BACKENDS, DemoCamera, camera_backend, open_camera
-from so101_utils.config import CONFIG, load_camera, save_camera_intrinsics
+from so101_utils.camera import (
+    BACKENDS, DemoCamera, camera_backend, open_camera, realsense_uses_device_intrinsics,
+)
+from so101_utils.config import CONFIG, D405_FX, load_camera, save_camera_intrinsics
 
 
-def test_only_realsense_and_demo_are_supported():
-    assert BACKENDS == ("realsense", "demo")
-    assert camera_backend({}) == "realsense"
+def test_the_main_camera_backends_are_supported():
+    assert BACKENDS == ("recamera", "webcamera", "realsense", "demo")
+    assert camera_backend({}) == "webcamera"
+    assert camera_backend({"backend": "recamera"}) == "recamera"
+    assert camera_backend({"backend": "realsense"}) == "realsense"
     assert camera_backend({"backend": "demo"}) == "demo"
-    for removed in ("recamera", "webcamera", "usb"):
-        with pytest.raises(ValueError, match="workshop uses"):
-            camera_backend({"backend": removed})
+    with pytest.raises(ValueError, match="usb"):
+        camera_backend({"backend": "usb"})
 
 
-def test_default_camera_config_is_a_realsense():
-    cfg = load_camera()
-    assert cfg["backend"] == "realsense"
-    assert cfg["serial"] is None
-    assert (cfg["width"], cfg["height"], int(cfg["fps"])) == (640, 480, 30)
+def test_a_d405_keeps_the_profile_and_another_realsense_reads_the_device():
+    assert realsense_uses_device_intrinsics("Intel RealSense D405") is False
+    assert realsense_uses_device_intrinsics("Intel RealSense D435") is True
 
 
-def test_realsense_intrinsics_come_from_the_device_not_the_profile(tmp_path):
+def test_a_realsense_profile_without_numbers_uses_the_d405(tmp_path):
     profile = tmp_path / "camera.yaml"
-    profile.write_text(
-        "backend: realsense\nwidth: 640\nheight: 480\nintrinsics:\n"
-        "  fx: 1.0\n  fy: 1.0\n  cx: 1.0\n  cy: 1.0\n"
-    )
-    assert load_camera(profile)["intrinsics"] is None
-    with pytest.raises(ValueError, match="from the device"):
+    profile.write_text("backend: realsense\nwidth: 640\nheight: 480\nfps: 30\n")
+    intr = load_camera(profile)["intrinsics"]
+    assert intr.fx == pytest.approx(D405_FX)
+    assert (intr.cx, intr.cy) == (320.0, 240.0)
+    with pytest.raises(ValueError, match="nothing to save"):
         save_camera_intrinsics(load_camera(CONFIG / "camera_demo.yaml")["intrinsics"], path=profile)
 
 

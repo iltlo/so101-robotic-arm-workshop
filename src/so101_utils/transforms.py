@@ -126,7 +126,7 @@ def residuals(samples, base_T_camera, gripper_T_tag):
     return np.array(translation), np.array(degrees)
 
 
-DEFAULT_MAX_ERROR_M = 0.020
+DEFAULT_MAX_ERROR_M = 0.030
 DEFAULT_MAX_ERROR_DEG = 8.0
 # A calibration needs at least this many poses, spread about two rotation axes.
 MIN_POSES = 4

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from so101_utils.click_app import box_centre, select_box
-from so101_workshop.detections import DetectionStore
+from so101_workshop.detections import DetectionStore, parse_detections
 from so101_workshop.yolo import draw_boxes, obb_boxes
 
 
@@ -105,3 +105,18 @@ def test_select_box_needs_a_click_inside_a_box():
     intrinsics = SimpleNamespace(width=640, height=480)
     with pytest.raises(ValueError, match="inside a detection box"):
         select_box((5, 5), [_box(100, 100, 200, 200)], [640, 480], intrinsics)
+
+
+def test_recamera_payload_becomes_the_same_box_list():
+    parsed = parse_detections({
+        "data": {
+            "boxes": [[100, 120, 60, 40, 70, 0]],
+            "labels": ["person"],
+            "resolution": [640, 480],
+            "image": "not-kept",
+        },
+    })
+    assert "image" not in parsed
+    box = parsed["boxes"][0]
+    assert box["label"] == "person"
+    assert (box["x1"], box["y1"], box["x2"], box["y2"]) == (70, 100, 130, 140)

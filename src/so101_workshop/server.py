@@ -189,6 +189,7 @@ def create_app(agent: Agent | None = None, *, listen: bool = False, viewer: bool
             return {"enabled": False, "boxes": []}
         snapshot = agent.detections.snapshot()
         snapshot["enabled"] = True
+        snapshot["detector"] = str(agent.settings.get("detector") or "recamera")
         return snapshot
 
     @app.post("/api/pick")

@@ -1,0 +1,16 @@
+# D405 colour camera at 640x480. These intrinsics are the nominal 87 by 58
+# degree field of view, with the principal point at the centre. Replace them
+# with a measured unit when you have one. Another RealSense model ignores this
+# block and reads the device, which needs: uv sync --extra vision
+backend: realsense
+serial: null
+width: 640
+height: 480
+fps: 30
+intrinsics:
+  fx: 337.2096
+  fy: 432.9715
+  cx: 320.0
+  cy: 240.0
+  distortion: []
+  distortion_model: none

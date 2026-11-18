@@ -104,14 +104,23 @@ def validated_limits(config: dict) -> dict[str, tuple[float, float]]:
     return result
 
 
+# Nominal D405 colour intrinsics at 640×480, from the published 87° × 58°
+# field of view, with the principal point at the centre. A measured unit
+# replaces the copy in camera_realsense.yaml. Another RealSense model ignores
+# these and reads the device.
+D405_FX = 337.2096
+D405_FY = 432.9715
+D405_CX = 320.0
+D405_CY = 240.0
+
+
 def load_camera(path: str | Path | None = None) -> dict:
     data = _load(Path(path) if path else CONFIG / "camera.yaml")
-    if str(data.get("backend") or "realsense") == "realsense":
-        # A RealSense reports its intrinsics when the colour stream opens. Any
-        # copy in an older profile is ignored, so swapping a D405 for a D435
-        # cannot leave the wrong focal lengths in use.
-        data["intrinsics"] = None
-        return data
+    if str(data.get("backend") or "") == "realsense" and not data.get("intrinsics"):
+        data["intrinsics"] = {
+            "fx": D405_FX, "fy": D405_FY, "cx": D405_CX, "cy": D405_CY,
+            "distortion": [], "distortion_model": "none",
+        }
     intr = data.get("intrinsics") or {}
     data["intrinsics"] = Intrinsics(
         int(data["width"]),
@@ -131,8 +140,11 @@ def save_camera_intrinsics(intr: Intrinsics, *, serial=None, path: str | Path | 
     """
     path = Path(path) if path else CONFIG / "camera.yaml"
     current = _load(path)
-    if str(current.get("backend") or "realsense") == "realsense":
-        raise ValueError("RealSense intrinsics come from the device; nothing to save")
+    if str(current.get("backend") or "") == "realsense":
+        raise ValueError(
+            "A D405 keeps the intrinsics in its profile, and any other RealSense "
+            "reads the device; nothing to save"
+        )
     current["serial"] = serial if serial is not None else current.get("serial")
     current["width"] = int(intr.width)
     current["height"] = int(intr.height)
