@@ -37,11 +37,36 @@ _RECV_TIMEOUT_S = 0.5
 
 @dataclass
 class Frame:
-    image: np.ndarray
+    """One camera picture.
+
+    `jpeg` is the original compressed bytes when the source already sent a
+    JPEG, so the page does not encode the picture again. `image` is filled
+    on the first request for pixels.
+    """
+
+    image: np.ndarray | None
     timestamp: float
+    jpeg: bytes | None = None
+    width: int = 0
+    height: int = 0
+
+    def __post_init__(self) -> None:
+        if self.image is not None and (self.width <= 0 or self.height <= 0):
+            self.height = int(self.image.shape[0])
+            self.width = int(self.image.shape[1])
 
     @property
     def rgb_bgr(self) -> np.ndarray:
+        if self.image is None:
+            if not self.jpeg:
+                raise RuntimeError("Camera frame has no image")
+            import cv2
+            decoded = cv2.imdecode(np.frombuffer(self.jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+            if decoded is None:
+                raise RuntimeError("Camera JPEG could not be decoded")
+            self.image = decoded
+            self.height = int(decoded.shape[0])
+            self.width = int(decoded.shape[1])
         return self.image
 
 
@@ -79,31 +104,72 @@ def recamera_ws_url(url: str) -> str:
     return f"ws://{host}:{_RECAMERA_WS_PORT}{_RECAMERA_WS_PATH}"
 
 
-def _image_from_recamera_message(raw) -> np.ndarray | None:
-    """BGR image from one supervisor message, or None when it has no JPEG."""
+def _recamera_packet(raw) -> tuple[bytes | None, dict | None]:
+    """JPEG bytes and the data object from one supervisor message.
+
+    The JSON text is parsed once. The base64 picture is taken out of the dict
+    so a detection callback does not keep that string, and does not parse the
+    same message again.
+    """
     import base64
     import json
-
-    import cv2
 
     text = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw
     try:
         payload = json.loads(text)
-    except json.JSONDecodeError:
-        return None
+    except (json.JSONDecodeError, UnicodeDecodeError, TypeError):
+        return None, None
     if not isinstance(payload, dict):
-        return None
+        return None, None
     data = payload.get("data", payload)
     if not isinstance(data, dict):
+        return None, None
+    encoded = data.pop("image", None) or ""
+    jpeg = None
+    if encoded:
+        try:
+            decoded = base64.b64decode(encoded)
+        except (ValueError, TypeError):
+            decoded = b""
+        jpeg = decoded or None
+    return jpeg, data
+
+
+def _jpeg_size(data: bytes) -> tuple[int, int] | None:
+    """Width and height from a JPEG header, or None when the header is not one.
+
+    This avoids decoding every reCamera frame just to learn its size. OpenCV
+    still decodes the picture the first time something needs the pixels.
+    """
+    if len(data) < 4 or data[:2] != b"\xff\xd8":
         return None
-    encoded = data.get("image") or ""
-    if not encoded:
-        return None
-    try:
-        jpeg = base64.b64decode(encoded)
-    except (ValueError, TypeError):
-        return None
-    return cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+    index = 2
+    limit = len(data)
+    while index + 1 < limit:
+        if data[index] != 0xFF:
+            return None
+        while index < limit and data[index] == 0xFF:
+            index += 1
+        if index >= limit:
+            return None
+        marker = data[index]
+        index += 1
+        if marker in (0xD8, 0xD9) or marker == 0x01 or 0xD0 <= marker <= 0xD7:
+            continue
+        if index + 2 > limit:
+            return None
+        length = int.from_bytes(data[index:index + 2], "big")
+        if length < 2 or index + length > limit:
+            return None
+        # SOF0, SOF1, SOF2. The size sits after the length and the sample precision.
+        if marker in (0xC0, 0xC1, 0xC2) and length >= 7:
+            height = int.from_bytes(data[index + 3:index + 5], "big")
+            width = int.from_bytes(data[index + 5:index + 7], "big")
+            if width > 0 and height > 0:
+                return width, height
+            return None
+        index += length
+    return None
 
 
 class Recamera:
@@ -141,8 +207,7 @@ class Recamera:
                 self._await_first_frame()
                 frame = self._latest
                 if frame is not None:
-                    height, width = frame.image.shape[:2]
-                    print(f"reCamera stream is up, {width}x{height}.", flush=True)
+                    print(f"reCamera stream is up, {frame.width}x{frame.height}.", flush=True)
         except Exception:
             self.close()
             raise
@@ -194,12 +259,17 @@ class Recamera:
     def _run(self) -> None:
         try:
             source = self._frames if self._frames is not None else self._websocket_frames()
-            for image in source:
+            for item in source:
                 if self._stop.is_set():
                     return
-                if image is None:
+                if item is None:
                     continue
-                self._publish(image)
+                # The socket yields (jpeg, width, height). A test can yield BGR arrays.
+                if isinstance(item, tuple):
+                    jpeg, width, height = item
+                    self._publish_jpeg(jpeg, width, height)
+                else:
+                    self._publish(item)
                 if self._failed is not None:
                     return
         except Exception as exc:
@@ -224,16 +294,29 @@ class Recamera:
                             raw = ws.recv(timeout=_RECV_TIMEOUT_S)
                         except TimeoutError:
                             continue
-                        if self._on_payload is not None:
+                        jpeg, data = _recamera_packet(raw)
+                        if data is not None and self._on_payload is not None:
                             try:
-                                self._on_payload(raw)
+                                self._on_payload(data)
                             except Exception:
                                 pass
-                        image = _image_from_recamera_message(raw)
-                        if image is None:
+                        if not jpeg:
+                            continue
+                        size = _jpeg_size(jpeg)
+                        if size is None:
+                            import cv2
+                            image = cv2.imdecode(
+                                np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR,
+                            )
+                            if image is None:
+                                continue
+                            connected = True
+                            self._publish(image, jpeg)
+                            if self._failed is not None:
+                                return
                             continue
                         connected = True
-                        yield image
+                        yield jpeg, size[0], size[1]
             except (ConnectionClosed, TimeoutError, OSError) as exc:
                 if self._stop.is_set():
                     return
@@ -245,14 +328,24 @@ class Recamera:
                     return
                 delay = min(5.0, delay * 1.5)
 
-    def _publish(self, image) -> None:
+    def _publish(self, image, jpeg: bytes | None = None) -> None:
         height, width = int(image.shape[0]), int(image.shape[1])
         if width != self.intrinsics.width or height != self.intrinsics.height:
             self._fail(RuntimeError(
                 f"reCamera frame is {width}x{height}, "
                 f"config is {self.intrinsics.width}x{self.intrinsics.height}"))
             return
-        frame = Frame(np.array(image, copy=True), time.monotonic())
+        self._store(Frame(np.array(image, copy=True), time.monotonic(), jpeg=jpeg))
+
+    def _publish_jpeg(self, jpeg: bytes, width: int, height: int) -> None:
+        if width != self.intrinsics.width or height != self.intrinsics.height:
+            self._fail(RuntimeError(
+                f"reCamera frame is {width}x{height}, "
+                f"config is {self.intrinsics.width}x{self.intrinsics.height}"))
+            return
+        self._store(Frame(None, time.monotonic(), jpeg=jpeg, width=width, height=height))
+
+    def _store(self, frame: Frame) -> None:
         with self._lock:
             self._latest = frame
             self._seq += 1
@@ -504,6 +597,8 @@ class DemoCamera:
         self._stop = threading.Event()
         self._next = 0.0
         self._started = time.monotonic()
+        # The table, labels, and title do not move. Only the sweeping dot does.
+        self._static = None
 
     def poll(self) -> Frame | None:
         if self._stop.is_set():
@@ -527,6 +622,19 @@ class DemoCamera:
         self._stop.set()
 
     def _render(self, now: float) -> np.ndarray:
+        import cv2
+
+        if self._static is None:
+            self._static = self._draw_static()
+        image = self._static.copy()
+        scale = self.width / 1280.0
+        sweep = (math.sin((now - self._started) * 1.4) + 1.0) / 2.0
+        x = int(self.width * (0.1 + 0.8 * sweep))
+        cv2.circle(image, (x, int(self.height * 0.2)), max(1, int(14 * scale)), (80, 220, 140), -1)
+        return image
+
+    def _draw_static(self) -> np.ndarray:
+        """Table, objects, and title. Copied per frame; the dot is drawn on top."""
         import cv2
 
         width, height = self.width, self.height
@@ -553,9 +661,6 @@ class DemoCamera:
             cv2.putText(image, label, (cx - half, cy + half + int(26 * scale)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7 * scale, (220, 226, 232),
                         max(1, int(2 * scale)), cv2.LINE_AA)
-        sweep = (math.sin((now - self._started) * 1.4) + 1.0) / 2.0
-        x = int(width * (0.1 + 0.8 * sweep))
-        cv2.circle(image, (x, int(height * 0.2)), int(14 * scale), (80, 220, 140), -1)
         cv2.putText(image, "SO-101 demo camera", (int(24 * scale), int(44 * scale)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.9 * scale, (235, 240, 245),
                     max(1, int(2 * scale)), cv2.LINE_AA)

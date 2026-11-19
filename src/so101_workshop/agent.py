@@ -43,7 +43,9 @@ from so101_workshop.hooks import NullHook
 from so101_workshop.yolo import DEFAULT_CONFIDENCE, YoloWorker
 
 _FEATURES = ("connect", "estop", "teleop", "click_and_go", "calibration", "yolo", "instructor")
-_VIEWER_PERIOD_S = 0.15
+# 20 Hz. Faster than this, the web viewer queues poses and the mesh lags the
+# arm by an amount that changes as the queue grows and drains.
+_VIEWER_PERIOD_S = 0.05
 _VIEWER_CAMERA_PERIOD_S = 0.5
 # Status polls every 800 ms. Profiles only need to be read every few seconds;
 # the hardware page refreshes them on demand.
@@ -144,10 +146,19 @@ class Agent:
         self._viewer_tick = 0.0
         self._viewer_camera_tick = 0.0
         self._tag_detector = None
+        self._tag_for_detector = None
         self._tag_lock = Lock()
         self._catalog_lock = Lock()
         self._catalog_at = 0.0
         self._catalog: list[dict] = []
+        # robot.yaml and hand_eye.yaml, keyed by mtime. Status polls every
+        # 800 ms, and the viewer reads the same files on the camera tick.
+        # They change only when someone saves them.
+        self._robot_config_cache = None
+        self._robot_view_cache = None
+        self._hand_eye_config_cache = None
+        self._realsense_installed_cache: bool | None = None
+        self._rerun_installed_cache: bool | None = None
 
     def start_worker(self) -> None:
         if self._worker is None or not self._worker.is_alive():
@@ -278,7 +289,7 @@ class Agent:
         self.estop_event.clear()
         self._estop_applied = False
         self._attach_viewer()
-        self.message = "Mock arm connected" if mock else f"Arm connected on {load_robot()['port']}"
+        self.message = "Mock arm connected" if mock else f"Arm connected on {self._robot_config()['port']}"
         return self.message
 
     def disconnect_arm(self) -> None:
@@ -346,8 +357,91 @@ class Agent:
             self._catalog = catalog
         return catalog
 
+    def _file_stamp(self, path: Path):
+        try:
+            return path.stat().st_mtime_ns
+        except OSError:
+            return None
+
+    def _robot_config(self) -> dict:
+        """robot.yaml, parsed again only after the file changes."""
+        path = Path(station_config.CONFIG) / "robot.yaml"
+        stamp = self._file_stamp(path)
+        cached = self._robot_config_cache
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+        data = load_robot()
+        self._robot_config_cache = (stamp, data)
+        self._robot_view_cache = None
+        return data
+
+    def _robot_view(self) -> dict:
+        """Port and joint limits from the cached robot.yaml."""
+        data = self._robot_config()
+        cached = self._robot_view_cache
+        if cached is not None and cached[0] is data:
+            return cached[1]
+        view = {
+            "port": data.get("port"),
+            "limits": {
+                name: [float(low), float(high)]
+                for name, (low, high) in validated_limits(data).items()
+            },
+        }
+        self._robot_view_cache = (data, view)
+        return view
+
+    def _hand_eye_config(self):
+        """hand_eye.yaml, or None when it is missing. Re-read after it changes."""
+        path = Path(station_config.CONFIG) / "hand_eye.yaml"
+        stamp = self._file_stamp(path)
+        cached = self._hand_eye_config_cache
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+        if stamp is None:
+            loaded = None
+        else:
+            try:
+                loaded = load_hand_eye()
+            except Exception:
+                loaded = None
+        self._hand_eye_config_cache = (stamp, loaded)
+        return loaded
+
+    def _hand_eye_view(self) -> dict:
+        """Whether hand_eye.yaml is saved, from the cached file."""
+        saved = self._hand_eye_config()
+        if not saved:
+            return {"saved": False}
+        return {
+            "saved": True,
+            "max_residual_m": saved.get("max_residual_m"),
+            "max_residual_deg": saved.get("max_residual_deg"),
+        }
+
+    def _configured_tag(self):
+        """The tag from robot.yaml. A changed file drops the old detector."""
+        tag = self._robot_config()["tag"]
+        if self._tag_detector is not None and self._tag_for_detector is not tag:
+            self._tag_detector = None
+            self._tag_for_detector = None
+        return tag
+
+    def _realsense_installed(self) -> bool:
+        if self._realsense_installed_cache is None:
+            self._realsense_installed_cache = find_spec("pyrealsense2") is not None
+        return self._realsense_installed_cache
+
+    def _rerun_installed(self) -> bool:
+        if self._rerun_installed_cache is None:
+            from so101_workshop.viewer import rerun_binary
+            self._rerun_installed_cache = (
+                find_spec("rerun") is not None and rerun_binary() is not None
+            )
+        return self._rerun_installed_cache
+
     def _camera_available(self, backend: str) -> tuple[bool, str | None]:
-        if backend == "realsense" and find_spec("pyrealsense2") is None:
+        if backend == "realsense" and not self._realsense_installed():
             return False, "pyrealsense2 is not installed (vision extra)"
         return True, None
 
@@ -548,18 +642,21 @@ class Agent:
         return port
 
     def motor_midpoint(self) -> dict:
-        bus = self._bus()
-        return self.submit(bus.set_midpoint)
+        if self.arm is None:
+            raise RuntimeError("Connect the real arm to calibrate motors")
+        return self.submit(self.arm.set_motor_midpoint)
 
     def motor_range_start(self) -> str:
-        bus = self._bus()
-        self.submit(bus.start_range_capture)
+        if self.arm is None:
+            raise RuntimeError("Connect the real arm to calibrate motors")
+        self.submit(self.arm.start_motor_range)
         self.message = "Move every joint except wrist roll through its range, including the gripper"
         return self.message
 
     def motor_range_stop(self) -> dict:
-        bus = self._bus()
-        saved = self.submit(bus.stop_range_capture)
+        if self.arm is None:
+            raise RuntimeError("Connect the real arm to calibrate motors")
+        saved = self.submit(self.arm.stop_motor_range)
         self.message = "Motor ranges saved"
         return saved
 
@@ -647,7 +744,7 @@ class Agent:
         frame = self.latest_bgr()
         if frame is None:
             raise RuntimeError("Camera image is not ready")
-        tag = load_robot()["tag"]
+        tag = self._configured_tag()
         try:
             pose, corners = self._detect_tag(frame)
         except ValueError as exc:
@@ -679,7 +776,7 @@ class Agent:
     def solve_hand_eye(self) -> dict:
         if self._auto_running():
             raise RuntimeError("Stop auto calibration before saving")
-        tag = load_robot()["tag"]
+        tag = self._configured_tag()
         solved = solve_eye_to_hand(self._hand_samples, tag.gripper_T_tag)
         station_config.save_hand_eye(
             solved["base_T_camera"],
@@ -785,7 +882,7 @@ class Agent:
         samples = []
         try:
             if self._auto_tour(samples):
-                solved = solve_eye_to_hand(samples, load_robot()["tag"].gripper_T_tag)
+                solved = solve_eye_to_hand(samples, self._configured_tag().gripper_T_tag)
                 station_config.save_hand_eye(
                     solved["base_T_camera"],
                     residual_m=solved["max_residual_m"],
@@ -883,18 +980,19 @@ class Agent:
         cam = self.cam
         if cam is None:
             raise RuntimeError("Camera is not connected")
-        tag = load_robot()["tag"]
+        tag = self._configured_tag()
         with self._tag_lock:
             if self._tag_detector is None:
                 from so101_utils.tags import tag_detector
                 self._tag_detector = tag_detector(tag)
+                self._tag_for_detector = tag
             return find_tag(frame, cam.intrinsics, tag, detector=self._tag_detector)
 
     def live_pose(self) -> dict:
         """Position, RPY, and joint angles. No camera, catalog, or viewer checks."""
         if self.arm is None:
             return {"connected": False, "pose": None, "joints": None}
-        joints = self.arm.get_joints()
+        joints = self.arm.recent_joints()
         current = self.arm.pose_at(joints)
         return {
             "connected": True,
@@ -922,18 +1020,17 @@ class Agent:
         }
         if self.arm is not None:
             try:
-                arm["port"] = None if self.arm.mock else load_robot().get("port")
+                robot = self._robot_view()
+                arm["port"] = None if self.arm.mock else robot["port"]
                 # One serial read feeds both the pose and the joint table.
-                joints = self.arm.get_joints()
+                # A sample the viewer or a move just took is reused.
+                joints = self.arm.recent_joints()
                 current = self.arm.pose_at(joints)
                 pose = {
                     "x": current.x, "y": current.y, "z": current.z,
                     "roll": current.roll, "pitch": current.pitch, "yaw": current.yaw,
                 }
-                limits = {
-                    name: [float(low), float(high)]
-                    for name, (low, high) in validated_limits(load_robot()).items()
-                }
+                limits = robot["limits"]
             except Exception as exc:
                 arm["error"] = str(exc)
             arm["pose"] = pose
@@ -970,15 +1067,7 @@ class Agent:
                     intrinsics_source = "profile"
             except Exception:
                 pass
-        try:
-            saved_hand_eye = load_hand_eye()
-            hand_eye_file = {
-                "saved": True,
-                "max_residual_m": saved_hand_eye.get("max_residual_m"),
-                "max_residual_deg": saved_hand_eye.get("max_residual_deg"),
-            }
-        except Exception:
-            hand_eye_file = {"saved": False}
+        hand_eye_file = self._hand_eye_view()
         profiles = self.camera_catalog()
         body = {
             "arm": arm,
@@ -993,7 +1082,7 @@ class Agent:
                 "profile": self.camera_path().name,
                 "config": self.camera_config_used,
                 "presets": profiles,
-                "realsense_available": find_spec("pyrealsense2") is not None,
+                "realsense_available": self._realsense_installed(),
             },
             "teleop": {
                 "step_m": None if self.teleop is None else self.teleop.step,
@@ -1032,12 +1121,10 @@ class Agent:
         }
 
     def viewer_status(self) -> dict:
-        from so101_workshop.viewer import rerun_binary
-
         starting = self._viewer_starting
         running = self.viewer is not None and self.viewer.running()
         url = self.viewer.url if running else None
-        available = find_spec("rerun") is not None and rerun_binary() is not None
+        available = self._rerun_installed()
         if not self.viewer_allowed:
             detail = "Rerun was disabled with --no-viewer."
         elif url:
@@ -1123,7 +1210,7 @@ class Agent:
         try:
             self._ensure_urdf()
             from so101_workshop.viewer import open_viewer
-            urdf = Path(station_config.ROOT) / "assets" / "SO101" / "so101_new_calib.urdf"
+            urdf = self._model_urdf()
             intrinsics = (self.cam.intrinsics if self.cam is not None
                           else self.camera_cfg().get("intrinsics"))
             viewer = open_viewer(urdf, intrinsics)
@@ -1164,7 +1251,16 @@ class Agent:
                 if self.viewer is not None:
                     self._detach_viewer()
                 return
-            self.viewer.twin.show(self.arm)
+            # Motion calls this every 20 ms. Share the viewer thread's clock so
+            # the two of them together stay at `_VIEWER_PERIOD_S`.
+            self._publish_pose()
+
+    def _publish_pose(self) -> None:
+        now = time.monotonic()
+        if now - self._viewer_tick < _VIEWER_PERIOD_S:
+            return
+        self._viewer_tick = now
+        self.viewer.twin.show(self.arm)
 
     def _draw_goal(self, pose) -> None:
         with self._viewer_draw_lock:
@@ -1198,16 +1294,33 @@ class Agent:
 
     def latest_bgr(self):
         with self._media:
-            if self._bgr is None:
-                return None
-            return self._bgr.copy()
+            if self._bgr is not None:
+                return self._bgr.copy()
+            jpeg = self._jpeg
+        if not jpeg:
+            return None
+        # A reCamera frame is stored as the original JPEG. Decode it once,
+        # the first time a click, a tag, or the viewer needs the pixels.
+        import cv2
+        import numpy as np
+        image = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if image is None:
+            return None
+        with self._media:
+            if self._jpeg is jpeg:
+                self._bgr = image
+            return image.copy()
 
     def mjpeg(self):
+        last = None
         while not self._stop.is_set():
             frame = self.latest_jpeg()
-            if frame is None:
+            # The page keeps the last picture. Sending the same JPEG again
+            # only copies it onto the socket.
+            if not frame or frame is last:
                 time.sleep(0.05)
                 continue
+            last = frame
             yield (
                 b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
             )
@@ -1269,37 +1382,42 @@ class Agent:
             arm = self.arm
             if arm is None:
                 return
-            now = time.monotonic()
-            if now - self._viewer_tick < _VIEWER_PERIOD_S:
-                return
-            self._viewer_tick = now
             try:
                 twin = self.viewer.twin
+                # Pose first, on the fixed cadence. Hand-eye detection used to
+                # replace this and hold the pose until the tag search finished,
+                # so the mesh lagged by however long that search took.
+                self._publish_pose()
+                if twin.intrinsics is None:
+                    return
+                now = time.monotonic()
+                if now - self._viewer_camera_tick < _VIEWER_CAMERA_PERIOD_S:
+                    return
+                # Copy the picture only on the ticks that log it. Doing this
+                # every pose tick copies a full frame and throws it away.
                 frame = self.latest_bgr()
-                if frame is not None and self.viewer_mode == "hand-eye":
+                if frame is None:
+                    return
+                self._viewer_camera_tick = now
+                if self.viewer_mode == "hand-eye":
                     self._log_hand_eye(twin, frame, arm)
                 else:
-                    twin.show(arm)
-                    if (frame is not None and twin.intrinsics is not None
-                            and now - self._viewer_camera_tick >= _VIEWER_CAMERA_PERIOD_S):
-                        self._viewer_camera_tick = now
-                        twin.log_camera(frame)
-                        twin.flush()
+                    twin.log_camera(frame)
+                    twin.flush()
             except Exception:
                 return
 
     def _log_hand_eye(self, twin, frame, arm) -> None:
         from so101_utils.tags import tag_detector
         from so101_utils.views import log_hand_eye
-        tag = load_robot()["tag"]
-        try:
-            base_T_camera = load_hand_eye()["base_T_camera"]
-        except Exception:
-            base_T_camera = None
+        tag = self._configured_tag()
+        saved = self._hand_eye_config()
+        base_T_camera = None if not saved else saved.get("base_T_camera")
         # Preview requests share this detector, so detection is serialised.
         with self._tag_lock:
             if self._tag_detector is None:
                 self._tag_detector = tag_detector(tag)
+                self._tag_for_detector = tag
             log_hand_eye(
                 twin, frame, arm, tag, base_T_camera,
                 detector=self._tag_detector,
@@ -1320,12 +1438,19 @@ class Agent:
         return str(self.settings.get("detector") or "recamera") == "recamera"
 
     def _on_camera_payload(self, raw) -> None:
-        """YOLO boxes that arrive with the same reCamera JPEG frame."""
-        try:
-            text = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw
-            payload = json.loads(text)
-        except (UnicodeDecodeError, TypeError, json.JSONDecodeError):
-            return
+        """YOLO boxes that arrive with the same reCamera JPEG frame.
+
+        The camera thread passes the data dict it already parsed. A caller
+        can still pass the original JSON text.
+        """
+        if isinstance(raw, dict):
+            payload = raw
+        else:
+            try:
+                text = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw
+                payload = json.loads(text)
+            except (UnicodeDecodeError, TypeError, json.JSONDecodeError, AttributeError):
+                return
         if not isinstance(payload, dict):
             return
         data = payload.get("data", payload)
@@ -1363,7 +1488,7 @@ class Agent:
         self._camera_connecting = False
 
     def _camera_loop(self) -> None:
-        import cv2
+        seen = None
         while not self._cam_stop.is_set() and not self._stop.is_set():
             try:
                 frame = self.cam.poll() if self.cam is not None else None
@@ -1371,27 +1496,55 @@ class Agent:
                 self.camera_error = str(exc)
                 time.sleep(0.2)
                 continue
-            if frame is None:
+            if frame is None or frame is seen:
                 time.sleep(0.03)
                 continue
+            try:
+                self._store_camera_frame(frame)
+            except Exception as exc:
+                self.camera_error = str(exc)
+                time.sleep(0.2)
+                continue
+            seen = frame
+            time.sleep(0.03)
+
+    def _store_camera_frame(self, frame) -> None:
+        """Keep the latest JPEG for the page, and pixels only when we have them.
+
+        A reCamera message is already a JPEG. Encoding it again is the work
+        this skips. A webcam or RealSense frame has no JPEG, so it is encoded
+        here, on every platform.
+        """
+        jpeg = getattr(frame, "jpeg", None) or None
+        image = getattr(frame, "image", None)
+        if self._detector is not None:
             image = frame.rgb_bgr
-            if self._detector is not None:
-                self._detector.submit(image)
+            self._detector.submit(image)
+        if not jpeg:
+            import cv2
+            if image is None:
+                image = frame.rgb_bgr
             ok, encoded = cv2.imencode(
                 ".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), 80],
             )
             if not ok:
-                continue
+                return
             jpeg = encoded.tobytes()
-            with self._media:
-                self._jpeg = jpeg
-                self._bgr = image
-                self._frame_size = (int(image.shape[1]), int(image.shape[0]))
-            try:
-                self.hook.on_frame(jpeg)
-            except Exception:
-                pass
-            time.sleep(0.03)
+        width = int(getattr(frame, "width", 0) or 0)
+        height = int(getattr(frame, "height", 0) or 0)
+        if (width <= 0 or height <= 0) and image is not None:
+            height, width = int(image.shape[0]), int(image.shape[1])
+        with self._media:
+            self._jpeg = jpeg
+            # Drop a decoded picture that belongs to an older JPEG. The next
+            # reader decodes this one.
+            self._bgr = image
+            if width > 0 and height > 0:
+                self._frame_size = (width, height)
+        try:
+            self.hook.on_frame(jpeg)
+        except Exception:
+            pass
 
     def _pick_pixel(self, x: int, y: int):
         return self._move_to_pixel(
@@ -1413,7 +1566,9 @@ class Agent:
             self._require_motion()
             self._use_tool(tool_offset)
             self._check_pixel(pixel)
-            hand = load_hand_eye()
+            hand = self._hand_eye_config()
+            if not hand:
+                hand = load_hand_eye()
             target = click_target(
                 pixel, self.cam.intrinsics, hand["base_T_camera"], height_m,
             )
@@ -1447,22 +1602,16 @@ class Agent:
     def _calibrated(self) -> bool:
         if self.arm is None:
             return False
-        if self.arm.mock:
-            return True
-        follower = getattr(self.arm._backend, "robot", None)
-        if follower is None:
-            return False
-        return bool(getattr(follower, "is_calibrated", False))
+        return self.arm.calibrated()
 
-    def _bus(self):
-        if self.arm is None or self.arm.mock:
-            raise RuntimeError("Connect the real arm to calibrate motors")
-        return self.arm._backend.bus
+    def _model_urdf(self) -> Path:
+        """Mesh the viewer draws. A connected arm brings its own URDF."""
+        if self.arm is not None:
+            return Path(self.arm.urdf)
+        return Path(station_config.ROOT) / "assets" / "SO101" / "so101_new_calib.urdf"
 
     def _use_tool(self, metres: float) -> None:
-        self.arm.ee_tool_offset = float(metres)
-        if self.arm._kin is not None:
-            self.arm._kin.ee_tool_offset = float(metres)
+        self.arm.set_tool_offset(metres)
 
     def _check_pixel(self, pixel) -> None:
         size = self._frame_size

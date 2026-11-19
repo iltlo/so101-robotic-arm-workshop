@@ -107,15 +107,10 @@ class UrdfScene:
                     mesh,
                     static=True,
                 )
-        rr.set_time("tick", sequence=0)
         for joint in self._joints.values():
-            # A fixed joint never gets another sample. Static keeps it in place
-            # after the time cursor moves on; a revolute joint is updated live.
-            transform = joint.compute_transform(0.0)
-            if joint.joint_type == "fixed":
-                rr.log(joint.entity, transform, static=True)
-            else:
-                rr.log(joint.entity, transform)
+            # Timeless on purpose. A time-indexed joint pose follows the
+            # viewer's cursor, and that cursor lags the arm on this Rerun.
+            rr.log(joint.entity, joint.compute_transform(0.0), static=True)
 
 
 def _materials(root) -> dict[str, tuple[int, int, int, int]]:

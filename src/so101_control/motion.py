@@ -55,6 +55,7 @@ def move_joints(robot, targets: dict[str, float], limits: dict[str, tuple[float,
     last joint command. Without it, the split begins at the encoders.
     `single_goal` sends a move of up to two steps in one write: a keyboard nudge
     should not wait out a ramp it can barely see.
+    `on_step(measured)` receives the joint sample this step already read.
     """
     if not targets or not set(targets) <= set(JOINTS):
         raise ValueError("Unknown or empty joint target")
@@ -107,7 +108,7 @@ def move_joints(robot, targets: dict[str, float], limits: dict[str, tuple[float,
         if commanded is not None:
             commanded.update(point)
         if on_step is not None:
-            on_step()
+            on_step(measured)
         if index < steps:
             time.sleep(period_s)
     if wait:
@@ -123,7 +124,7 @@ def move_joints(robot, targets: dict[str, float], limits: dict[str, tuple[float,
             error = max(abs(measured[name] - value) for name, value in targets.items())
             if error <= tolerance_deg:
                 if on_step is not None:
-                    on_step()
+                    on_step(measured)
                 return measured
             if error <= SETTLE_ACCEPT_DEG:
                 if anchor is None or any(
@@ -137,6 +138,6 @@ def move_joints(robot, targets: dict[str, float], limits: dict[str, tuple[float,
             else:
                 anchor = None
             if on_step is not None:
-                on_step()
+                on_step(measured)
             time.sleep(period_s)
     return joint_state(robot)

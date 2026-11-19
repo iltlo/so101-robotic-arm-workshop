@@ -17,7 +17,7 @@ def test_the_twin_draws_the_base_frame_and_the_ee():
     text = Path(__file__).resolve().parents[1].joinpath("src/so101_utils/views.py").read_text()
     assert 'f"{robot_root}/base_frame"' in text
     assert "static=True" in text
-    assert 'f"{root}/fk_ee_axes"' in text
+    assert 'f"{root}/fk_ee"' in text
 
 
 def test_axis_arrows_carry_no_text():

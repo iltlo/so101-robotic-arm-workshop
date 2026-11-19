@@ -57,6 +57,37 @@ def test_status_starts_disconnected(client):
     }
 
 
+def test_status_rereads_robot_yaml_only_when_it_changes(client, monkeypatch):
+    assert client.post("/api/arm/connect", json={"mock": True}).status_code == 200
+    loads = []
+    real = agent_module.load_robot
+
+    def counting(*args, **kwargs):
+        loads.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(agent_module, "load_robot", counting)
+    client.get("/api/status")
+    client.get("/api/status")
+    assert loads == [1]
+
+
+def test_a_recamera_jpeg_is_kept_for_the_page(client):
+    import cv2
+
+    from so101_utils.camera import Frame
+
+    image = np.zeros((12, 18, 3), np.uint8)
+    image[1, 1] = (3, 4, 5)
+    ok, encoded = cv2.imencode(".jpg", image)
+    assert ok
+    jpeg = encoded.tobytes()
+    client.agent._store_camera_frame(Frame(None, 0.0, jpeg=jpeg, width=18, height=12))
+    assert client.agent.latest_jpeg() == jpeg
+    assert client.agent.latest_bgr().shape == (12, 18, 3)
+    assert client.agent._frame_size == (18, 12)
+
+
 def test_status_reuses_the_camera_catalog(client, monkeypatch):
     agent = client.agent
     calls = []
@@ -128,6 +159,62 @@ def test_detections_panel_is_empty_until_yolo_reports(client):
     assert body["enabled"] is True
     assert body["boxes"] == []
     assert body["detector"] == "recamera"
+
+
+def test_a_parsed_recamera_payload_stores_its_boxes(client):
+    client.agent._on_camera_payload({
+        "boxes": [[10, 12, 6, 4, 80, 1]],
+        "labels": ["cup"],
+        "resolution": [100, 80],
+    })
+    body = client.get("/api/detections").json()
+    assert body["boxes"][0]["label"] == "cup"
+    assert body["boxes"][0]["x1"] == 7
+
+
+def test_a_repeated_camera_frame_is_encoded_once(client):
+    from threading import Thread
+
+    from so101_utils.camera import Frame
+
+    image = np.zeros((8, 8, 3), np.uint8)
+    frame = Frame(image, 0.0)
+
+    class Cam:
+        def poll(self):
+            return frame
+
+    agent = client.agent
+    agent.cam = Cam()
+    agent._cam_stop.clear()
+    thread = Thread(target=agent._camera_loop, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 1.0
+    jpeg = None
+    while time.monotonic() < deadline:
+        jpeg = agent.latest_jpeg()
+        if jpeg:
+            break
+        time.sleep(0.01)
+    assert jpeg
+    time.sleep(0.08)
+    assert agent.latest_jpeg() is jpeg
+    agent._cam_stop.set()
+    thread.join(1)
+
+
+def test_hand_eye_yaml_is_read_once_until_it_changes(client, monkeypatch):
+    loads = []
+    real = agent_module.load_hand_eye
+
+    def counting(*args, **kwargs):
+        loads.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(agent_module, "load_hand_eye", counting)
+    assert client.agent._hand_eye_config() is not None
+    assert client.agent._hand_eye_config() is client.agent._hand_eye_config()
+    assert loads == [1]
 
 
 def test_a_recamera_frame_stores_its_boxes(client):

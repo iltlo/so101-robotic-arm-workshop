@@ -58,6 +58,70 @@ def test_demo_camera_returns_frames():
         cam.close()
 
 
+def test_demo_camera_draws_the_table_once():
+    cfg = load_camera(CONFIG / "camera_demo.yaml")
+    cam = DemoCamera(cfg["intrinsics"], width=cfg["width"], height=cfg["height"], fps=30)
+    first = cam._render(cam._started)
+    background = cam._static
+    second = cam._render(cam._started + 0.4)
+    assert background is cam._static
+    assert first.shape == second.shape == (480, 640, 3)
+    # The sweeping dot moves; the cached table underneath does not.
+    assert not np.array_equal(first, second)
+
+
+def test_a_recamera_message_is_parsed_into_jpeg_and_boxes():
+    import base64
+    import json
+
+    import cv2
+
+    from so101_utils.camera import _recamera_packet
+
+    image = np.zeros((48, 64, 3), np.uint8)
+    ok, encoded = cv2.imencode(".jpg", image)
+    assert ok
+    jpeg = encoded.tobytes()
+    raw = json.dumps({
+        "data": {
+            "image": base64.b64encode(jpeg).decode("ascii"),
+            "boxes": [[1, 2, 3, 4, 90, 0]],
+            "labels": ["cup"],
+        }
+    })
+    got, data = _recamera_packet(raw)
+    assert got == jpeg
+    assert "image" not in data
+    assert data["labels"] == ["cup"]
+
+
+def test_jpeg_size_matches_an_opencv_frame():
+    import cv2
+
+    from so101_utils.camera import _jpeg_size
+
+    image = np.zeros((48, 64, 3), np.uint8)
+    image[1, 2] = (8, 9, 10)
+    ok, encoded = cv2.imencode(".jpg", image)
+    assert ok
+    assert _jpeg_size(encoded.tobytes()) == (64, 48)
+
+
+def test_a_jpeg_frame_decodes_when_pixels_are_requested():
+    import cv2
+
+    from so101_utils.camera import Frame
+
+    image = np.zeros((16, 20, 3), np.uint8)
+    image[0, 0] = (4, 5, 6)
+    ok, encoded = cv2.imencode(".jpg", image)
+    assert ok
+    frame = Frame(None, 0.0, jpeg=encoded.tobytes(), width=20, height=16)
+    assert frame.image is None
+    assert frame.rgb_bgr.shape == (16, 20, 3)
+    assert frame.rgb_bgr is frame.image
+
+
 def test_open_camera_uses_the_demo_profile():
     cfg = load_camera(CONFIG / "camera_demo.yaml")
     with open_camera(cfg) as cam:

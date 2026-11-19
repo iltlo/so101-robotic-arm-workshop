@@ -256,6 +256,80 @@ def test_z_and_c_spin_the_gripper_when_a_pose_solve_cannot():
     assert arm.calls == []
 
 
+def test_releasing_during_the_move_drops_the_remaining_steps():
+    module = _load()
+    arm = _Arm()
+    teleop = module.Teleop(arm)
+    seen = []
+
+    def move_to(x, y, z, roll=None, pitch=None, yaw=None, wait=True,
+                single_goal=False, hold_point=False, cancel=None, rotation=None):
+        teleop.release_token("w")
+        stopped = bool(cancel and cancel())
+        seen.append(stopped)
+        return not stopped
+
+    arm.move_to = move_to
+    teleop.press_token("w")
+    teleop.poll()
+    assert seen == [True]
+    teleop.poll()
+    assert seen == [True]
+
+
+def test_releasing_a_held_key_stops_the_next_step_as_well():
+    module = _load()
+    arm = _Arm()
+    teleop = module.Teleop(arm)
+    calls = {"n": 0}
+
+    def move_to(x, y, z, roll=None, pitch=None, yaw=None, wait=True,
+                single_goal=False, hold_point=False, cancel=None, rotation=None):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            teleop.release_token("w")
+            return not bool(cancel and cancel())
+        return True
+
+    arm.move_to = move_to
+    teleop.press_token("w")
+    teleop.poll()
+    teleop.poll()
+    assert calls["n"] == 2
+    teleop.poll()
+    assert calls["n"] == 2
+
+
+def test_a_release_before_the_move_still_runs_that_one_step():
+    module = _load()
+    arm = _Arm()
+    teleop = module.Teleop(arm)
+    teleop.press_token("w")
+    teleop.release_token("w")
+    teleop.poll()
+    assert len(arm.calls) == 1
+    teleop.poll()
+    assert len(arm.calls) == 1
+
+
+def test_releasing_a_different_key_leaves_the_current_move_alone():
+    module = _load()
+    arm = _Arm()
+    teleop = module.Teleop(arm)
+    seen = []
+
+    def move_to(x, y, z, roll=None, pitch=None, yaw=None, wait=True,
+                single_goal=False, hold_point=False, cancel=None, rotation=None):
+        teleop.release_token("a")
+        seen.append(bool(cancel and cancel()))
+        return True
+
+    arm.move_to = move_to
+    teleop.press_token("w")
+    teleop.poll()
+    assert seen == [False]
+
+
 def test_a_new_key_replaces_one_that_has_not_run():
     module = _load()
     arm = _Arm()

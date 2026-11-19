@@ -1,9 +1,10 @@
-"""URDF forward kinematics and pose IK. Joints in degrees, TCP in metres.
+"""SO-101 pose IK. Joints in degrees, TCP in metres.
 
-The chain is the URDF itself: each joint origin is a rigid transform and each
-revolute joint is a rotation about its axis. Inverse kinematics is damped
-least squares on that chain, with a null-space pull back to the seed so a
-short step keeps the arm configuration the recorded solver produced.
+The arm adapter reads this follower's URDF and reduces it to a standard
+Denavit–Hartenberg table. Forward kinematics and the Jacobian are that table,
+so inverse kinematics is damped least squares on the DH chain. A different
+arm supplies its own table; the five-joint goal rules in this module stay
+with the SO-101.
 """
 
 from dataclasses import dataclass
@@ -17,6 +18,8 @@ from scipy.spatial.transform import Rotation
 
 from so101_utils.model import JOINTS, gripper_rotation_from_rpy, tool_rpy
 from so101_utils.transforms import transform
+
+from .dh import DhChain
 
 # Feedback can rest slightly past a calibrated stop. Commanded goals stay inside.
 LIMIT_MARGIN_DEG = 2.0
@@ -328,6 +331,7 @@ class Kinematics:
         if not np.isfinite(offset):
             raise ValueError("ee_tool_offset must be finite")
         # Metres along gripper_frame_link +Z. Positive follows the blue axis.
+        self.urdf = str(urdf)
         self.ee_tool_offset = offset
         self._lock = RLock()
         base, chain = _load_chain(urdf)
@@ -376,17 +380,77 @@ class Kinematics:
         self._chain_slots = tuple(self._columns.get(joint.name, -1) for joint in tool_chain)
         self._ee = np.eye(4)
         self._link = np.eye(4)
+        self._adopt_dh()
+
+    def _adopt_dh(self) -> None:
+        """Replace the URDF walk with the standard DH table it reduces to.
+
+        The table is checked against the URDF at two poses. A chain that does
+        not reduce — an extra revolute on the tool path, or a frame the DH
+        product cannot reproduce — is refused here rather than solved wrongly.
+        """
+        extra = [
+            joint.name for joint in self._chain
+            if joint.movable and joint.name not in self._columns
+        ]
+        if extra:
+            raise ValueError(
+                f"URDF tool chain has a revolute joint that is not an arm joint: {extra}")
+        self._dh_index = tuple(
+            self._columns[joint.name]
+            for joint in self._chain
+            if joint.movable and joint.name in self._columns
+        )
+        zeros = np.zeros(len(JOINTS))
+        axes, pivots, rotation, translation, link = self._urdf_frames(zeros)
+        chain = DhChain.from_axes(
+            [pivots[index] for index in self._dh_index],
+            [axes[index] for index in self._dh_index],
+        )
+        chain.mount(_pose(rotation, translation), link)
+        self._dh = chain
+        for trial in (zeros, np.deg2rad(np.array([20.0, -30.0, 40.0, 15.0, -25.0]))):
+            self._require_dh_match(trial)
+        self._remember_radians(zeros)
+
+    def _require_dh_match(self, radians: np.ndarray) -> None:
+        axes, pivots, rotation, translation, link = self._urdf_frames(radians)
+        got_axes, got_pivots, got_link, got_ee = self._dh_frames(radians)
+        if (not np.allclose(got_ee, _pose(rotation, translation), atol=1e-9)
+                or not np.allclose(got_link, link, atol=1e-9)):
+            raise ValueError("DH model does not match the URDF tool frame")
+        for index in self._dh_index:
+            aligned = abs(float(np.dot(axes[index], got_axes[index])) - 1.0)
+            off_axis = float(np.linalg.norm(np.cross(
+                axes[index], got_pivots[index] - pivots[index])))
+            if aligned > 1e-8 or off_axis > 1e-8:
+                raise ValueError("DH joint axis does not match the URDF")
+
+    def dh_table(self) -> tuple[dict[str, float], ...]:
+        """Standard DH rows in root-to-tool order: θ offset, d, a, α."""
+        return self._dh.table()
+
+    def _dh_frames(self, radians: np.ndarray):
+        values = np.asarray(radians, dtype=float)
+        axes_chain, pivots_chain, link, ee = self._dh.frames(values[list(self._dh_index)])
+        axes = np.zeros((len(JOINTS), 3))
+        pivots = np.zeros((len(JOINTS), 3))
+        for slot, index in enumerate(self._dh_index):
+            axes[index] = axes_chain[slot]
+            pivots[index] = pivots_chain[slot]
+        return axes, pivots, link, ee
 
     def close(self) -> None:
         return None
 
-    def _remember_radians(self, radians: np.ndarray):
-        """Store gripper_link and gripper_frame_link for `radians`, in joint order."""
+    def _urdf_frames(self, radians: np.ndarray):
+        """Tool frames from the URDF walk. Used to build and check the DH table."""
         values = np.asarray(radians, dtype=float)
         rotation = np.eye(3)
         translation = np.zeros(3)
         axes = np.zeros((len(JOINTS), 3))
         pivots = np.zeros((len(JOINTS), 3))
+        link = np.eye(4)
         for joint, column in zip(self._chain, self._chain_slots):
             placed_rotation = rotation @ joint.origin[:3, :3]
             placed_translation = rotation @ joint.origin[:3, 3] + translation
@@ -401,9 +465,15 @@ class Kinematics:
                 rotation = placed_rotation
             translation = placed_translation
             if joint.child == "gripper_link":
-                self._link = _pose(rotation, translation)
-        self._ee = _pose(rotation, translation)
-        return axes, pivots, rotation, translation
+                link = _pose(rotation, translation)
+        return axes, pivots, rotation, translation, link
+
+    def _remember_radians(self, radians: np.ndarray):
+        """Store gripper_link and gripper_frame_link for `radians`, in joint order."""
+        axes, pivots, link, ee = self._dh_frames(radians)
+        self._link = link
+        self._ee = ee
+        return axes, pivots, ee[:3, :3], ee[:3, 3]
 
     def _remember(self, degrees: np.ndarray):
         """Store gripper_link and gripper_frame_link for `degrees`."""
@@ -616,8 +686,8 @@ class Kinematics:
         `follow_yaw` gives an orientation goal the same freedom a bare point has:
         roll and pitch are pinned, and world-Z rotation follows the pan, which a
         five-joint arm can do without giving up the point. Such a goal is solved
-        with damped least squares, so the tool point does not move while the tool
-        turns. A turn still has to meet the whole orientation: `tolerance_deg`
+        with damped least squares on the standard DH Jacobian, so the tool point
+        does not move while the tool turns. A turn still has to meet the whole orientation: `tolerance_deg`
         is checked on all three axes, so a missed press is refused, not absorbed.
         `local_only` refuses the full-limit search, so a blocked step raises
         instead of jumping to another arm branch.

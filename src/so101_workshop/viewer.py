@@ -260,6 +260,9 @@ class WorkshopViewer:
         self.process = process
         self.grpc_port = grpc_port
         self._closed = False
+        # Once the gRPC port has accepted a connection, the process being alive
+        # is enough. Checking the port on every pose tick opens a socket.
+        self._listening = False
 
     def close(self) -> None:
         # Drop the gRPC sink first. Terminating the server while the SDK still
@@ -274,7 +277,12 @@ class WorkshopViewer:
     def running(self) -> bool:
         if self._closed or self.process.poll() is not None:
             return False
-        return _port_open(self.grpc_port)
+        if self._listening:
+            return True
+        if _port_open(self.grpc_port):
+            self._listening = True
+            return True
+        return False
 
 
 def _port_open(port: int) -> bool:

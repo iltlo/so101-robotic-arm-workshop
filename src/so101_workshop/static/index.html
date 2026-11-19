@@ -159,13 +159,6 @@
   .pill.bad { border-color: #5c2a28; }
   .pill.bad b { color: var(--danger); }
   .safety { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-  .link {
-    font-size: 11px;
-    color: var(--muted);
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    margin-right: 4px;
-  }
   .btn {
     border: 1px solid var(--line);
     background: var(--panel-2);
@@ -530,7 +523,6 @@
       <div class="pills" id="pills"></div>
     </div>
     <div class="safety">
-      <span class="link" id="link">local</span>
       <button class="btn ghost" id="keys-toggle" type="button" aria-pressed="false" title="Teleop keys turn on with the Teleop tab. Click to keep them on across tabs.">Key teleop: off</button>
       <button class="btn ghost" id="hold" type="button">Torque on</button>
       <button class="btn danger" id="estop" type="button" title="Esc stops the arm">E-stop<sup>Esc</sup></button>
@@ -1346,17 +1338,12 @@
       const status = await api("/api/status");
       state.statusFailures = 0;
       state.lastStatusError = "";
-      $("link").textContent = socket && socket.readyState === WebSocket.OPEN ? "local · ws" : "local · http";
       renderStatus(status);
     } catch (error) {
       // A slow serial or camera open can miss one poll. Only alarm after a
       // few failures so a working station never flashes "unreachable".
       state.statusFailures += 1;
-      if (state.statusFailures < 3) {
-        $("link").textContent = "reconnecting";
-        return;
-      }
-      $("link").textContent = "server unreachable";
+      if (state.statusFailures < 3) return;
       const text = error.message || String(error);
       if (text !== state.lastStatusError) {
         state.lastStatusError = text;
@@ -2100,9 +2087,6 @@
       return;
     }
     socket = opened;
-    opened.addEventListener("open", () => {
-      if (socket === opened) $("link").textContent = "local · ws";
-    });
     opened.addEventListener("message", (event) => {
       let data;
       try { data = JSON.parse(event.data); } catch { return; }
@@ -2115,7 +2099,6 @@
     opened.addEventListener("close", () => {
       if (socket === opened) {
         socket = null;
-        $("link").textContent = "local · http";
         setTimeout(connectSocket, 1500);
       }
     });

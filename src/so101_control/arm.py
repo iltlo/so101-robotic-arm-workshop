@@ -33,6 +33,9 @@ GRIPPER_MOVE_PERCENT = 0.8
 GRIPPER_MIN_HOLD_S = 0.25
 GRIPPER_STABLE_S = 0.2
 GRIPPER_POLL_S = 0.05
+# The page and the viewer may reuse a sample this fresh. A move already read
+# the bus, and another read waits on that same lock.
+JOINT_SAMPLE_S = 0.05
 
 # Metres along gripper_frame_link +Z.
 DEFAULT_EE_TOOL_OFFSET_M = 0.020
@@ -72,9 +75,12 @@ class Pose:
 
 
 class SO101:
-    """Connect, move, and read the follower. Use `with` so the port is closed.
+    """Connect, move, and read this follower. Use `with` so the port is closed.
 
-    `mock=True` keeps an in-memory arm: same IK, no serial.
+    This is the hardware adapter. Kinematics are the standard DH table of the
+    arm's URDF, and the bus is the Feetech chain. `mock=True` keeps an
+    in-memory arm with the same table and no serial. A later follower replaces
+    this class with its own table and bus; callers keep using the same methods.
     """
 
     def __init__(self, backend, kinematics: Kinematics, limits, *, mock: bool,
@@ -91,6 +97,7 @@ class SO101:
         self._on_motion = None
         self._on_target = None
         self._on_clear_goal = None
+        self._joint_sample: tuple[float, dict[str, float]] | None = None
         self.torque_on = True
         offset = float(ee_tool_offset)
         if not math.isfinite(offset):
@@ -99,6 +106,47 @@ class SO101:
         if kinematics is not None:
             kinematics.ee_tool_offset = offset
         self.set_speed(speed_deg_s)
+
+    @property
+    def urdf(self) -> str:
+        """URDF the viewer should draw for this arm."""
+        return self._kin.urdf
+
+    def set_tool_offset(self, metres: float) -> None:
+        """Move the tool point along gripper +Z. Later solves use the new point."""
+        offset = float(metres)
+        if not math.isfinite(offset):
+            raise ValueError("ee_tool_offset must be finite")
+        self.ee_tool_offset = offset
+        if self._kin is not None:
+            self._kin.ee_tool_offset = offset
+
+    def calibrated(self) -> bool:
+        """Whether the motors have saved ranges. A mock arm is always ready."""
+        if self.mock:
+            return True
+        follower = getattr(self._backend, "robot", None)
+        return bool(follower is not None and getattr(follower, "is_calibrated", False))
+
+    def _live_bus(self):
+        if self.mock:
+            raise RuntimeError("Connect the real arm to calibrate motors")
+        bus = getattr(self._backend, "bus", None)
+        if bus is None:
+            raise RuntimeError("Connect the real arm to calibrate motors")
+        return bus
+
+    def set_motor_midpoint(self) -> dict:
+        """Write the present servo positions as the zero of each joint."""
+        return self._live_bus().set_midpoint()
+
+    def start_motor_range(self) -> None:
+        """Begin recording the travel of every joint, including the gripper."""
+        self._live_bus().start_range_capture()
+
+    def stop_motor_range(self) -> dict:
+        """Stop the recording and return the ranges that were saved."""
+        return self._live_bus().stop_range_capture()
 
     @classmethod
     def connect(cls, mock: bool = False, config_path: str | None = None, *,
@@ -194,7 +242,30 @@ class SO101:
 
     def get_joints(self) -> dict[str, float]:
         """Arm joints in degrees. Gripper is percent: 0 closed, 100 fully open."""
-        return joint_state(self._backend)
+        state = joint_state(self._backend)
+        self._remember_joints(state)
+        return state
+
+    def recent_joints(self, max_age_s: float = JOINT_SAMPLE_S) -> dict[str, float]:
+        """Last joint sample if it is younger than `max_age_s`, else a new read.
+
+        Status and the viewer call this. The sample a move just took is reused
+        so those callers do not queue on the servo lock.
+        """
+        sample = self._joint_sample
+        if sample is not None and time.monotonic() - sample[0] <= max_age_s:
+            return sample[1]
+        return self.get_joints()
+
+    def _remember_joints(self, state: dict[str, float]) -> None:
+        self._joint_sample = (time.monotonic(), {name: float(value) for name, value in state.items()})
+
+    def _tracked_step(self, measured: dict[str, float]) -> None:
+        """Keep the sample this step already read, then draw."""
+        self._remember_joints(measured)
+        callback = self._on_motion
+        if callback is not None:
+            callback()
 
     def gripper_frame_pose(self, joints: dict[str, float] | None = None):
         """4x4 pose of gripper_frame_link. `joints` defaults to the arm right now."""
@@ -407,7 +478,7 @@ class SO101:
             done = move_joints(
                 self._backend, targets, self._limits,
                 speed_deg_s=self._speed, period_s=MOCK_PERIOD_S if self.mock else LIVE_PERIOD_S,
-                timeout_s=MOVE_TIMEOUT_S, wait=wait, on_step=self._on_motion, cancel=cancel,
+                timeout_s=MOVE_TIMEOUT_S, wait=wait, on_step=self._tracked_step, cancel=cancel,
                 start=start, commanded=sent, single_goal=single_goal,
             )
         except Exception:

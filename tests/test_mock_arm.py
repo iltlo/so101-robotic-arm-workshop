@@ -246,6 +246,50 @@ def test_move_grip_and_home():
         arm.wait()
 
 
+def test_a_move_shares_its_joint_sample_with_later_readers():
+    with SO101.connect(mock=True) as arm:
+        reads = {"n": 0}
+        original = arm._backend.get_observation
+
+        def counting():
+            reads["n"] += 1
+            return original()
+
+        arm._backend.get_observation = counting
+        arm.get_joints()
+        extras = []
+
+        def draw():
+            before = reads["n"]
+            arm.recent_joints()
+            extras.append(reads["n"] - before)
+
+        arm.track(draw)
+        arm.move_joint("shoulder_pan", 1.0)
+        assert len(extras) > 2
+        # The draw runs after the step's own read, so it must not take the bus.
+        assert extras == [0] * len(extras)
+
+
+def test_a_stale_joint_sample_is_read_again():
+    with SO101.connect(mock=True) as arm:
+        arm.get_joints()
+        reads = {"n": 0}
+        original = arm._backend.get_observation
+
+        def counting():
+            reads["n"] += 1
+            return original()
+
+        arm._backend.get_observation = counting
+        assert arm.recent_joints()["shoulder_pan"] == pytest.approx(0.0)
+        assert reads["n"] == 0
+        stamp, sample = arm._joint_sample
+        arm._joint_sample = (stamp - 1.0, sample)
+        arm.recent_joints()
+        assert reads["n"] == 1
+
+
 def test_tracker_sees_each_motion_step():
     with SO101.connect(mock=True) as arm:
         seen = []

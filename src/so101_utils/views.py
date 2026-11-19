@@ -2,6 +2,7 @@
 
 from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 import time
 
 import numpy as np
@@ -40,9 +41,15 @@ _CAMERA_AXIS_M = 0.04
 _TOOL_POINT_RADIUS_M = 0.007
 _TOOL_LINE_RADIUS_M = 0.0015
 _LIVE_PERIOD_S = 0.1
+# A move used to log a pose every 20 ms. The web viewer cannot ingest that, so
+# the extra poses queue and the mesh trails the arm by a delay that grows and
+# shrinks. One pose every 50 ms stays within a frame.
+_POSE_PERIOD_S = 0.05
+# A full camera frame makes the viewer hitch. The workshop page has its own
+# stream; this copy only feeds the Rerun panel.
+_RERUN_IMAGE_EDGE_PX = 640
 # The plots follow the newest sample at their right edge. Without a window the
 # view is sized to the whole session and the curve appears to start midway.
-_PLOT_WINDOW_TICKS = 400
 _PLOT_WINDOW_S = 60.0
 
 # Five synthetic poses for scripts/twin.py --mock.
@@ -70,13 +77,41 @@ def _pinhole_entity(rr, intrinsics):
     )
 
 
+def _fit_image(image_bgr):
+    """Shrink a frame so the viewer is not decoding a full-resolution JPEG."""
+    import cv2
+
+    height, width = image_bgr.shape[:2]
+    longest = max(height, width)
+    if longest <= _RERUN_IMAGE_EDGE_PX:
+        return image_bgr, 1.0
+    scale = _RERUN_IMAGE_EDGE_PX / float(longest)
+    resized = cv2.resize(
+        image_bgr,
+        (max(1, int(round(width * scale))), max(1, int(round(height * scale)))),
+        interpolation=cv2.INTER_AREA,
+    )
+    return resized, scale
+
+
+def _scaled_intrinsics(intrinsics, image, source_width: int, source_height: int):
+    height, width = image.shape[:2]
+    scale_x = width / float(source_width)
+    scale_y = height / float(source_height)
+    return SimpleNamespace(
+        fx=intrinsics.fx * scale_x, fy=intrinsics.fy * scale_y,
+        cx=intrinsics.cx * scale_x, cy=intrinsics.cy * scale_y,
+        width=width, height=height,
+    )
+
+
 def _log_rgb(rr, image_bgr) -> None:
     import cv2
 
     # A raw 1280×720 frame is about 3 MB. JPEG keeps the live camera from
     # pushing the arm meshes and the plot history out of the viewer.
     ok, encoded = cv2.imencode(
-        ".jpg", image_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 80],
+        ".jpg", image_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 70],
     )
     if not ok:
         rr.log(_CAMERA, rr.Image(cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)))
@@ -89,13 +124,8 @@ def _flush(rr) -> None:
 
 
 def _plot_ranges(rrb):
-    """Right-anchored windows for the sequence tick and wall-clock timelines."""
+    """Right-anchored window on the wall-clock timeline."""
     return [
-        rrb.VisibleTimeRange(
-            "tick",
-            start=rrb.TimeRangeBoundary.cursor_relative(seq=-_PLOT_WINDOW_TICKS),
-            end=rrb.TimeRangeBoundary.cursor_relative(),
-        ),
         rrb.VisibleTimeRange(
             "log_time",
             start=rrb.TimeRangeBoundary.cursor_relative(seconds=-_PLOT_WINDOW_S),
@@ -135,7 +165,16 @@ def _arm_blueprint(rrb, root, *, intrinsics):
             rrb.Vertical(arm_view, joint_plot),
             rrb.Vertical(camera, pose_plots),
         )
-    return rrb.Blueprint(layout, auto_views=False, collapse_panels=True)
+    # Wall clock only. Rerun 0.26 prefers any timeline we name ourselves over
+    # `log_time`, and a sequence timeline has no duration, so the 3D view plays
+    # an older sample. Joint poses are logged timeless so the mesh does not
+    # follow that cursor.
+    return rrb.Blueprint(
+        layout,
+        rrb.TimePanel(state="collapsed", timeline="log_time"),
+        auto_views=False,
+        collapse_panels=True,
+    )
 
 
 class Twin:
@@ -158,10 +197,23 @@ class Twin:
         self.jaw = self.tree.get_joint_by_name("gripper")
         if self.jaw is None or self.jaw.joint_type != "revolute":
             raise ValueError("Follower URDF missing gripper jaw joint")
-        self.tick = 0
         self.ee_tool_offset = None
+        self._ee_geometry = False
+        self._tool_geometry = None
+        self._static_axes: set[str] = set()
+        self._logged_image_size = None
         self.alive = True
-        rr.init("so101_control", spawn=spawn and recording is None and grpc_url is None)
+        # `init` builds the recording before the gRPC sink exists, and that
+        # recording keeps the default batcher: a chunk can sit for 200 ms.
+        # A live viewer wants the 8 ms batcher, which has to be chosen here.
+        rr.init("so101_control", spawn=False, init_logging=False)
+        self._stream = rr.RecordingStream(
+            "so101_control",
+            make_default=True,
+            batcher_config=rr.ChunkBatcherConfig.LOW_LATENCY(),
+        )
+        if spawn and recording is None and grpc_url is None:
+            rr.spawn()
         if grpc_url:
             rr.connect_grpc(grpc_url)
         if recording is not None:
@@ -190,7 +242,7 @@ class Twin:
         blueprint = _arm_blueprint(rrb, robot_root, intrinsics=intrinsics)
         rr.send_blueprint(blueprint)
         if recording is not None:
-            blueprint.save("so101_control", Path(recording).with_suffix(".rbl"))
+            blueprint.save("so101_control", str(Path(recording).with_suffix(".rbl")))
 
     def mark_ee_tool(self, metres: float) -> None:
         """Draw the tool point each update: `metres` along gripper +Z."""
@@ -210,6 +262,7 @@ class Twin:
         import rerun.blueprint as rrb
 
         self.intrinsics = intrinsics
+        self._logged_image_size = None
         self.rr.log(_CAMERA, _pinhole_entity(self.rr, intrinsics), static=True)
         self.rr.send_blueprint(
             _arm_blueprint(rrb, f"/{self.tree.name}", intrinsics=intrinsics)
@@ -241,30 +294,37 @@ class Twin:
         if self.ee_tool_offset:
             drawn[:3, 3] = matrix[:3, 3] + matrix[:3, :3] @ np.array(
                 [0.0, 0.0, self.ee_tool_offset])
-        self.rr.log(f"/{self.tree.name}/hover_goal",
-                    _frame_arrows(self.rr, drawn, "goal", length=_GOAL_AXIS_M))
+        self.rr.log(
+            f"/{self.tree.name}/hover_goal",
+            _frame_arrows(self.rr, drawn, "goal", length=_GOAL_AXIS_M),
+            static=True,
+        )
         self.flush()
 
     def clear_goal(self) -> None:
         """Remove the goal axes. Home and rest leave no target pose."""
         if not self.alive:
             return
-        self.tick += 1
-        self.rr.set_time("tick", sequence=self.tick)
-        self.rr.log(f"/{self.tree.name}/hover_goal", self.rr.Clear(recursive=False))
+        self.rr.log(
+            f"/{self.tree.name}/hover_goal", self.rr.Clear(recursive=False), static=True,
+        )
         self.flush()
 
     def update(self, state: dict[str, float], *, ee_pose=None, flexion_axis=None) -> None:
         """Log one frame. Callers flush once the frame is complete."""
         if not self.alive:
             return
-        self.tick += 1
-        self.rr.set_time("tick", sequence=self.tick)
         for name, joint in self.joints.items():
             angle = float(state[name])
             if not np.isfinite(angle):
                 raise ValueError(f"Invalid joint feedback {name}")
-            self.rr.log(joint.entity, joint.compute_transform(float(np.deg2rad(angle)), clamp=False))
+            # Timeless: the web viewer's time cursor lags live data by seconds
+            # on Rerun 0.26, and a time-indexed transform follows that cursor.
+            self.rr.log(
+                joint.entity,
+                joint.compute_transform(float(np.deg2rad(angle)), clamp=False),
+                static=True,
+            )
             self.rr.log(f"telemetry/joints/{name}", self.rr.Scalars(angle))
 
         # 0 is closed and 100 is open. The URDF has no servo-to-jaw map, so the
@@ -276,7 +336,9 @@ class Twin:
             gripper, [GRIPPER_CLOSED_PERCENT, GRIPPER_OPEN_PERCENT],
             [self.jaw.limit_lower, self.jaw.limit_upper],
         ))
-        self.rr.log(self.jaw.entity, self.jaw.compute_transform(jaw_angle, clamp=True))
+        self.rr.log(
+            self.jaw.entity, self.jaw.compute_transform(jaw_angle, clamp=True), static=True,
+        )
 
         if ee_pose is not None:
             pose = np.asarray(ee_pose, dtype=float)
@@ -284,25 +346,16 @@ class Twin:
                 raise ValueError("Invalid EE FK pose")
             xyz = pose[:3, 3]
             rpy = tool_rpy(pose[:3, :3], flexion_axis)
-            # The Placo gripper_frame pose, not the URDF link axes: those drift
-            # apart after a local tool-frame edit.
+            # The gripper_frame pose, not the URDF link axes: those drift
+            # apart after a local tool-frame edit. The arrows are logged once
+            # and moved with a transform. Logging new arrow geometry every
+            # frame is what made the viewer fall behind.
             root = f"/{self.tree.name}"
-            self.rr.log(f"{root}/fk_ee_axes", _frame_arrows(self.rr, pose, "fk"))
+            self._log_ee_geometry(root)
+            self.rr.log(f"{root}/fk_ee", self.rr.Transform3D(
+                translation=xyz, mat3x3=pose[:3, :3],
+            ), static=True)
             self.rr.log(f"{root}/gripper_link_axes", self.rr.Clear(recursive=False))
-            if self.ee_tool_offset:
-                tip = xyz + pose[:3, :3] @ np.array([0.0, 0.0, self.ee_tool_offset])
-                tip_pose = np.eye(4)
-                tip_pose[:3, :3] = pose[:3, :3]
-                tip_pose[:3, 3] = tip
-                self.rr.log(f"{root}/ee_tool", self.rr.Points3D(
-                    [tip], radii=_TOOL_POINT_RADIUS_M, colors=[[255, 210, 40]],
-                    labels=[f"ee {self.ee_tool_offset * 1000:+.0f} mm"],
-                ))
-                self.rr.log(f"{root}/ee_tool_line", self.rr.LineStrips3D(
-                    [np.stack([xyz, tip])], colors=[[255, 210, 40]], radii=_TOOL_LINE_RADIUS_M,
-                ))
-                self.rr.log(f"{root}/ee_tool_axes",
-                            _frame_arrows(self.rr, tip_pose, "tool", length=_TOOL_AXIS_M))
             for group, names, values in (
                 ("xyz", ("x_m", "y_m", "z_m"), xyz),
                 ("rpy", ("roll_deg", "pitch_deg", "yaw_deg"), rpy),
@@ -310,13 +363,65 @@ class Twin:
                 for name, value in zip(names, values):
                     self.rr.log(f"telemetry/ee/{group}/{name}", self.rr.Scalars(float(value)))
 
+    def _log_ee_geometry(self, root: str) -> None:
+        """Static arrow geometry. Later frames only move `fk_ee`."""
+        if not self._ee_geometry:
+            self.rr.log(
+                f"{root}/fk_ee/axes",
+                _frame_arrows(self.rr, np.eye(4), "fk", length=_FK_AXIS_M),
+                static=True,
+            )
+            self._ee_geometry = True
+        offset = self.ee_tool_offset
+        if offset is None or offset == self._tool_geometry:
+            return
+        self.rr.log(
+            f"{root}/fk_ee/tool",
+            self.rr.Transform3D(translation=[0.0, 0.0, offset]),
+            static=True,
+        )
+        self.rr.log(f"{root}/fk_ee/tool/point", self.rr.Points3D(
+            [[0.0, 0.0, 0.0]], radii=_TOOL_POINT_RADIUS_M, colors=[[255, 210, 40]],
+            labels=[f"ee {offset * 1000:+.0f} mm"],
+        ), static=True)
+        self.rr.log(f"{root}/fk_ee/tool_line", self.rr.LineStrips3D(
+            [[[0.0, 0.0, 0.0], [0.0, 0.0, offset]]],
+            colors=[[255, 210, 40]], radii=_TOOL_LINE_RADIUS_M,
+        ), static=True)
+        self.rr.log(
+            f"{root}/fk_ee/tool/axes",
+            _frame_arrows(self.rr, np.eye(4), "tool", length=_TOOL_AXIS_M),
+            static=True,
+        )
+        self._tool_geometry = offset
+
+    def log_static_axes(self, path: str, label: str, length: float) -> None:
+        """Arrow geometry once. A Transform3D on the parent moves it later."""
+        if path in self._static_axes:
+            return
+        self.rr.log(
+            path,
+            _frame_arrows(self.rr, np.eye(4), label, length=length),
+            static=True,
+        )
+        self._static_axes.add(path)
+
     def log_camera(self, image_bgr) -> None:
         """Show one RGB frame. `image_bgr` is OpenCV BGR."""
         if not self.alive:
             return
         if self.intrinsics is None:
             raise RuntimeError("This twin was opened without a camera view")
-        _log_rgb(self.rr, image_bgr)
+        source_height, source_width = image_bgr.shape[:2]
+        image, scale = _fit_image(image_bgr)
+        if scale != 1.0:
+            size = (int(image.shape[1]), int(image.shape[0]))
+            if size != self._logged_image_size:
+                self._logged_image_size = size
+                self.rr.log(_CAMERA, _pinhole_entity(self.rr, _scaled_intrinsics(
+                    self.intrinsics, image, source_width, source_height,
+                )), static=True)
+        _log_rgb(self.rr, image)
 
     def flush(self) -> None:
         """Push the latest log data to the viewer now."""
@@ -324,7 +429,10 @@ class Twin:
             _flush(self.rr)
 
     def show(self, arm) -> None:
-        state = arm.get_joints()
+        # A move just read these joints. Reuse that sample instead of taking
+        # the servo bus again on the draw.
+        read = getattr(arm, "recent_joints", None)
+        state = read() if read is not None else arm.get_joints()
         self.update(state, ee_pose=arm.gripper_frame_pose(state), flexion_axis=arm.nod_axis(state))
         self.flush()
 
@@ -334,7 +442,17 @@ def watch_arm(arm, urdf: str | Path, *, intrinsics=None) -> Twin:
     twin = Twin(urdf, intrinsics=intrinsics)
     if arm.ee_tool_offset:
         twin.mark_ee_tool(arm.ee_tool_offset)
-    arm.track(lambda: twin.show(arm))
+    shown_at = 0.0
+
+    def draw() -> None:
+        nonlocal shown_at
+        now = time.monotonic()
+        if now - shown_at < _POSE_PERIOD_S:
+            return
+        shown_at = now
+        twin.show(arm)
+
+    arm.track(draw)
     arm.on_target(twin.show_goal_pose)
     arm.on_clear_goal(twin.clear_goal)
     return twin
@@ -379,17 +497,21 @@ def log_hand_eye(twin, image_bgr, arm, tag, base_T_camera=None, detector=None):
     """
     if not getattr(twin, "alive", True):
         return None
-    state = arm.get_joints()
+    # The pose was just read for the mesh. Reuse it instead of taking the bus
+    # again before a tag search that can take tens of milliseconds.
+    read = getattr(arm, "recent_joints", None)
+    state = read() if read is not None else arm.get_joints()
     tool = arm.gripper_frame_pose(state)
     twin.update(state, ee_pose=tool)
+    # Tag search takes a varying amount of time. The arm pose has to leave
+    # before that, or the mesh waits on detection and the delay jumps around.
+    twin.flush()
     base_T_gripper = arm.gripper_link_pose(state)
     root = f"/{twin.tree.name}"
     rr = twin.rr
-    rr.log(f"{root}/fk_ee_axes", _frame_arrows(rr, tool, "tool"))
-    rr.log(f"{root}/gripper_link_axes", rr.Clear(recursive=False))
     mount = tag.gripper_T_tag
     rr.log(f"{twin.tree.link_entity('gripper_link')}/tag_mount", rr.Transform3D(
-        translation=mount[:3, 3], mat3x3=mount[:3, :3]))
+        translation=mount[:3, 3], mat3x3=mount[:3, :3]), static=True)
     image = np.ascontiguousarray(image_bgr).copy()
     try:
         camera_T_tag, corners = find_tag(image, twin.intrinsics, tag, detector=detector)
@@ -402,15 +524,16 @@ def log_hand_eye(twin, image_bgr, arm, tag, base_T_camera=None, detector=None):
             seen = base_T_camera @ camera_T_tag
             base = twin.tree.link_entity("base_link")
             rr.log(f"{base}/camera_tag", rr.Transform3D(
-                translation=seen[:3, 3], mat3x3=seen[:3, :3]))
+                translation=seen[:3, 3], mat3x3=seen[:3, :3]), static=True)
     if base_T_camera is not None:
         base = twin.tree.link_entity("base_link")
         rr.log(f"{base}/station_camera", rr.Transform3D(
-            translation=base_T_camera[:3, 3], mat3x3=base_T_camera[:3, :3]))
-        rr.log(f"{root}/camera_axes",
-               _frame_arrows(rr, base_T_camera, "camera", length=_CAMERA_AXIS_M))
+            translation=base_T_camera[:3, 3], mat3x3=base_T_camera[:3, :3]), static=True)
+        twin.log_static_axes(f"{base}/station_camera/axes", "camera", _CAMERA_AXIS_M)
     tag_pose = base_T_gripper @ mount
-    rr.log(f"{root}/tag_axes", _frame_arrows(rr, tag_pose, "tag", length=_TAG_AXIS_M))
+    rr.log(f"{root}/tag_frame", rr.Transform3D(
+        translation=tag_pose[:3, 3], mat3x3=tag_pose[:3, :3]), static=True)
+    twin.log_static_axes(f"{root}/tag_frame/axes", "tag", _TAG_AXIS_M)
     twin.log_camera(image)
     twin.flush()
     return camera_T_tag

@@ -52,6 +52,9 @@ class Teleop:
         self._held: set[str] = set()
         self._queue: deque[str] = deque()
         self._active: str | None = None
+        # True while a move is sending its joint steps. A release only cuts
+        # those steps; a release before the move starts leaves the tap queued.
+        self._busy = False
         # Set from the key thread so a trajectory already on the worker stops.
         self._interrupt = Event()
 
@@ -102,11 +105,19 @@ class Teleop:
             return token in self._queue
 
     def release_token(self, token: str) -> None:
+        """Drop a held key. A release during its move discards the steps not yet sent."""
         token = _ARROWS.get(token, token)
         if not token:
             return
         with self._lock:
             self._held.discard(token)
+            if token not in _INTERRUPTING or not self._busy:
+                return
+            # Another key already owns the trajectory. Letting go of the old
+            # one must not cut the new move off.
+            if self._active not in (None, token):
+                return
+            self._interrupt.set()
 
     def reset(self) -> None:
         """Forget held keys and the target so the next nudge starts at the arm."""
@@ -114,6 +125,7 @@ class Teleop:
             self._held.clear()
             self._queue.clear()
             self._active = None
+            self._busy = False
             self._interrupt.clear()
             self._command = None
             self._turn_point = None
@@ -151,8 +163,7 @@ class Teleop:
         token = self._token(key)
         if token is None:
             return
-        with self._lock:
-            self._held.discard(token)
+        self.release_token(token)
 
     def poll(self) -> None:
         """Apply one queued key, or one step for the keys still held."""
@@ -163,6 +174,7 @@ class Teleop:
             held = set(self._held)
             if token is not None:
                 self._active = token
+                self._busy = True
                 self._interrupt.clear()
         if token is not None:
             try:
@@ -170,9 +182,7 @@ class Teleop:
                     with self._lock:
                         self._queue.appendleft(token)
             finally:
-                with self._lock:
-                    if self._active == token:
-                        self._active = None
+                self._finish_motion()
             return
         if self._interrupt.is_set():
             return
@@ -180,7 +190,20 @@ class Teleop:
         if dx == dy == dz == dr == dp == 0.0:
             time.sleep(IDLE_S)
             return
-        self._nudge(dx, dy, dz, dr, dp)
+        with self._lock:
+            self._busy = True
+        try:
+            self._nudge(dx, dy, dz, dr, dp)
+        finally:
+            self._finish_motion()
+
+    def _finish_motion(self) -> None:
+        """The joint steps have stopped. A key queued during them still runs next."""
+        with self._lock:
+            self._busy = False
+            self._active = None
+            if not self._queue:
+                self._interrupt.clear()
 
     def _delta(self, tokens):
         dx = dy = dz = dr = dp = 0.0

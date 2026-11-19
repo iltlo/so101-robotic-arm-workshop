@@ -67,6 +67,25 @@ def _write(tmp_path, urdf_text, change, name="variant.urdf"):
     return str(path)
 
 
+def test_the_dh_table_reproduces_the_urdf_pose(reference):
+    """IK differentiates the standard DH chain, so that chain must be the URDF."""
+    import math
+
+    table = reference.dh_table()
+    assert len(table) == len(JOINTS)
+    assert table[0]["alpha_rad"] == pytest.approx(math.pi / 2, abs=1e-6)
+    assert table[1]["alpha_rad"] == pytest.approx(0.0, abs=1e-6)
+    assert table[1]["a_m"] == pytest.approx(0.116, abs=1e-3)
+    for state in _FK_STATES:
+        radians = np.deg2rad([state[name] for name in JOINTS])
+        _axes, _pivots, rotation, translation, link = reference._urdf_frames(radians)
+        pose = np.eye(4)
+        pose[:3, :3] = rotation
+        pose[:3, 3] = translation
+        assert reference.fk(state) == pytest.approx(pose, abs=1e-9)
+        assert reference.fk_gripper_link(state) == pytest.approx(link, abs=1e-9)
+
+
 def _assert_same_fk(reference, variant):
     for state in _FK_STATES:
         assert variant.fk(state) == pytest.approx(reference.fk(state), abs=1e-9)
