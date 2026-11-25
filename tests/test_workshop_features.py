@@ -113,7 +113,7 @@ def test_console_script_is_so101_workshop():
 def test_page_lists_the_controls(client):
     page = client.get("/")
     assert page.status_code == 200
-    for label in ("E-stop", "Torque on", "Mock arm", "Connect camera", "Hardware",
+    for label in ("Press to enable torque", "Motors off", "Set place from arm", "Place jump height", "Mock arm", "Connect camera", "Hardware",
                   "Motor calibration", "Hand-eye", "Click and go", "Click and pick", "Rerun",
                   "Camera profile", "Intrinsics", "Start Rerun",
                   "Z down", "Roll +", "Pitch −", "H · Home", "R · Rest", "Space · Gripper",

@@ -141,6 +141,27 @@ def create_app(agent: Agent | None = None, *, listen: bool = False, viewer: bool
     def hold():
         return call(lambda: {"message": agent.torque_on()})
 
+    @app.post("/api/relax")
+    def relax():
+        return call(lambda: {"message": agent.torque_off()})
+
+    @app.post("/api/place/set")
+    def set_place_pose():
+        return call(agent.set_place_pose)
+
+    @app.post("/api/place/reset")
+    def reset_place_pose():
+        return call(agent.reset_place_pose)
+
+    @app.post("/api/place/jump")
+    def set_place_jump(body: dict = Body(default_factory=dict)):
+        jump_m = body.get("jump_m")
+        if jump_m is None and body.get("jump_cm") is not None:
+            jump_m = float(body["jump_cm"]) / 100.0
+        if jump_m is None:
+            raise HTTPException(status_code=400, detail="jump_m or jump_cm required")
+        return call(lambda: agent.set_place_jump(float(jump_m)))
+
     @app.post("/api/teleop")
     def teleop(body: dict):
         require("teleop")

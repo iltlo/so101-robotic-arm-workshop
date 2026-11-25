@@ -158,6 +158,59 @@ def save_camera_intrinsics(intr: Intrinsics, *, serial=None, path: str | Path | 
                     + yaml.safe_dump(current, sort_keys=False))
 
 
+def default_place_joints() -> dict[str, float]:
+    from so101_control.arm import REST_JOINTS
+
+    return {name: float(angle) for name, angle in REST_JOINTS.items()}
+
+
+def load_place_joints() -> dict[str, float]:
+    """Joint targets for pick-and-place release. Defaults to the folded rest pose."""
+    path = CONFIG / "workshop.yaml"
+    if not path.is_file():
+        return default_place_joints()
+    data = yaml.safe_load(path.read_text()) or {}
+    if not isinstance(data, dict):
+        return default_place_joints()
+    raw = data.get("place_joints")
+    if not isinstance(raw, dict):
+        return default_place_joints()
+    joints = default_place_joints()
+    for name in JOINTS:
+        if name in raw:
+            joints[name] = float(raw[name])
+    return joints
+
+
+DEFAULT_PLACE_JUMP_M = 0.05
+
+
+def load_place_jump_m() -> float:
+    path = CONFIG / "workshop.yaml"
+    if not path.is_file():
+        return DEFAULT_PLACE_JUMP_M
+    data = yaml.safe_load(path.read_text()) or {}
+    if not isinstance(data, dict):
+        return DEFAULT_PLACE_JUMP_M
+    raw = data.get("place_jump_m")
+    if raw is None:
+        return DEFAULT_PLACE_JUMP_M
+    return float(raw)
+
+
+def save_place_jump_m(jump_m: float) -> float:
+    value = float(jump_m)
+    update_workshop(place_jump_m=value)
+    return value
+
+
+def save_place_joints(joints: dict[str, float]) -> dict[str, float]:
+    """Write place_joints into workshop.yaml and return the saved mapping."""
+    payload = {name: float(joints[name]) for name in JOINTS}
+    update_workshop(place_joints=payload)
+    return payload
+
+
 def update_workshop(**values) -> dict:
     """Merge top-level keys into workshop.yaml and return the result.
 

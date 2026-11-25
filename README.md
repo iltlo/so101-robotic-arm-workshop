@@ -39,7 +39,7 @@ The **Tasks** tabs are the exercises.
 | Click and pick | Click the table. The gripper opens, picks, returns to rest, and opens. |
 | Detect and pick | Click a box. The arm picks the centre of that box. |
 
-**Key teleop** in the top bar keeps the keys working on every tab. The red E-stop turns torque off.
+**Key teleop** in the top bar keeps the keys working on every tab. The motor control shows the current state and what the next press does: green **Press to torque off** (or **Esc**) while holding, red **Press to enable torque** when off.
 
 Detect and pick uses the boxes from the reCamera. To run YOLO on this computer instead, install the extra and set `detector: local` in `workshop.yaml`:
 

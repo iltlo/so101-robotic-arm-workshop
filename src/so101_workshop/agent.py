@@ -19,12 +19,18 @@ from so101_utils.auto_hand_eye import DWELL_S, calibration_poses
 from so101_utils.camera import camera_backend
 from so101_utils.click_app import box_centre, click_target, select_box
 from so101_utils.config import (
+    default_place_joints,
     load_camera,
     load_hand_eye,
+    load_place_joints,
+    load_place_jump_m,
     load_robot,
+    save_place_joints,
+    save_place_jump_m,
     validated_limits,
 )
 from so101_utils.hand_eye_flow import record_sample
+from so101_utils.model import JOINTS
 from so101_utils.intrinsics import WORKSHOP_MIN_VIEWS, capture_chessboard, find_chessboard, solve_captured
 from so101_utils.moves import (
     APPROACH_M,
@@ -32,6 +38,7 @@ from so101_utils.moves import (
     HOVER_M,
     PICK_HEIGHT_M,
     PICK_TOOL_OFFSET_M,
+    PLACE_JUMP_M,
     go_to,
     pick_and_return,
 )
@@ -159,6 +166,8 @@ class Agent:
         self._hand_eye_config_cache = None
         self._realsense_installed_cache: bool | None = None
         self._rerun_installed_cache: bool | None = None
+        self._place_joints = load_place_joints()
+        self._place_jump_m = load_place_jump_m()
 
     def start_worker(self) -> None:
         if self._worker is None or not self._worker.is_alive():
@@ -269,6 +278,41 @@ class Agent:
             self.message = "Torque on"
 
         return self.submit(job)
+
+    def torque_off(self):
+        if self.arm is None:
+            raise RuntimeError("Arm is not connected")
+
+        def job():
+            self.arm.relax()
+            self._clear_teleop()
+            self.message = "Torque off"
+
+        return self.submit(job)
+
+    def set_place_pose(self) -> dict:
+        if self.arm is None:
+            raise RuntimeError("Arm is not connected")
+        joints = self.arm.recent_joints()
+        place = {name: float(joints[name]) for name in JOINTS}
+        self._place_joints = save_place_joints(place)
+        self.message = "Place pose saved from the arm"
+        return {"joints": dict(self._place_joints), "default": False, "message": self.message}
+
+    def reset_place_pose(self) -> dict:
+        self._place_joints = default_place_joints()
+        save_place_joints(self._place_joints)
+        self.message = "Place pose reset to rest"
+        return {"joints": dict(self._place_joints), "default": True, "message": self.message}
+
+    def set_place_jump(self, jump_m: float) -> dict:
+        value = float(jump_m)
+        if not (0.0 <= value <= 0.30):
+            raise ValueError("Place jump height must be between 0 and 300 mm")
+        self._place_jump_m = save_place_jump_m(value)
+        mm = self._place_jump_m * 1000.0
+        self.message = f"Place jump height set to {mm:.0f} mm"
+        return {"place_jump_m": self._place_jump_m, "message": self.message}
 
     def connect_arm(self, *, mock: bool = False, port: str | None = None,
                     require_calibration: bool = True) -> str:
@@ -1105,6 +1149,10 @@ class Agent:
                 "hover_m": HOVER_M,
                 "pick_height_m": PICK_HEIGHT_M,
                 "approach_m": APPROACH_M,
+                "place_joints": dict(self._place_joints),
+                "place_default": self._place_joints == default_place_joints(),
+                "place_jump_m": self._place_jump_m,
+                "place_jump_default": self._place_jump_m == PLACE_JUMP_M,
             },
         }
         try:
@@ -1573,7 +1621,14 @@ class Agent:
                 pixel, self.cam.intrinsics, hand["base_T_camera"], height_m,
             )
             try:
-                arrived = move(self.arm, _Reporter(self, token), target)
+                if move is pick_and_return:
+                    arrived = pick_and_return(
+                        self.arm, _Reporter(self, token), target,
+                        place_joints=dict(self._place_joints),
+                        place_jump_m=float(self._place_jump_m),
+                    )
+                else:
+                    arrived = move(self.arm, _Reporter(self, token), target)
             finally:
                 # Click and pick move the arm on their own; drop any teleop
                 # point and frame cached before them.

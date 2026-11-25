@@ -334,3 +334,50 @@ def test_estop_stops_auto_hand_eye(client, monkeypatch):
     assert auto["running"] is False
     assert auto["cancelled"] is True
     assert "E-stop" in auto["message"]
+
+
+def test_place_jump_height_persists(client):
+    client.post("/api/arm/connect", json={"mock": True})
+    saved = client.post("/api/place/jump", json={"jump_cm": 8})
+    assert saved.status_code == 200
+    status = client.get("/api/status").json()
+    assert status["motion"]["place_jump_m"] == pytest.approx(0.08)
+    assert client.post("/api/place/jump", json={"jump_cm": 500}).status_code == 400
+
+
+def test_relax_turns_torque_off_without_estop(client):
+    client.post("/api/arm/connect", json={"mock": True})
+    arm = client.agent.arm
+    assert arm.torque_on is True
+    relaxed = client.post("/api/relax")
+    assert relaxed.status_code == 200
+    assert arm.torque_on is False
+    assert client.agent.estop_event.is_set() is False
+
+
+def test_place_pose_can_be_saved_and_reset(client, monkeypatch):
+    from so101_control.arm import REST_JOINTS
+
+    client.post("/api/arm/connect", json={"mock": True})
+    arm = client.agent.arm
+    custom = {name: float(angle) + (5.0 if name == "shoulder_pan" else 0.0)
+              for name, angle in REST_JOINTS.items()}
+
+    def fake_joints():
+        joints = arm.get_joints()
+        joints.update(custom)
+        return joints
+
+    monkeypatch.setattr(arm, "recent_joints", fake_joints)
+    saved = client.post("/api/place/set")
+    assert saved.status_code == 200
+    assert saved.json()["default"] is False
+    status = client.get("/api/status").json()
+    assert status["motion"]["place_default"] is False
+    assert status["motion"]["place_joints"]["shoulder_pan"] == pytest.approx(custom["shoulder_pan"])
+
+    reset = client.post("/api/place/reset")
+    assert reset.status_code == 200
+    assert reset.json()["default"] is True
+    status = client.get("/api/status").json()
+    assert status["motion"]["place_default"] is True

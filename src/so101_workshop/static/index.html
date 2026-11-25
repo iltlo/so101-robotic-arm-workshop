@@ -158,7 +158,67 @@
   .pill.good b { color: var(--accent); }
   .pill.bad { border-color: #5c2a28; }
   .pill.bad b { color: var(--danger); }
-  .safety { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+  .safety { display: flex; align-items: stretch; gap: 8px; flex-shrink: 0; }
+  #keys-toggle { white-space: nowrap; }
+  .torque-gate {
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 1px;
+    text-align: left;
+    line-height: 1.15;
+  }
+  .torque-gate-status {
+    font-size: 12px;
+    font-weight: 750;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+  }
+  .torque-gate-action {
+    font-size: 10px;
+    font-weight: 550;
+    opacity: 0.9;
+    white-space: nowrap;
+  }
+  .torque-gate.is-on {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-ink);
+  }
+  .torque-gate.is-on .torque-gate-action { opacity: 0.85; }
+  .torque-gate.is-on:hover:not(:disabled) { filter: brightness(0.95); }
+  .torque-gate.is-off {
+    background: #221316;
+    border-color: #5c2a28;
+    color: #f0d4d2;
+    box-shadow: 0 0 0 3px rgba(255, 95, 87, 0.1);
+  }
+  .torque-gate.is-off .torque-gate-status { color: var(--danger); }
+  .torque-gate.is-off .torque-gate-action { color: var(--ink); }
+  .torque-gate.is-off:hover:not(:disabled) {
+    border-color: #7a4a46;
+    box-shadow: 0 0 0 3px rgba(255, 95, 87, 0.16);
+  }
+  .torque-gate.is-idle {
+    background: var(--panel-2);
+    border-color: var(--line);
+    color: var(--muted);
+    box-shadow: none;
+  }
+  .torque-gate.is-idle .torque-gate-status { color: var(--muted); }
+  .torque-gate .torque-gate-action kbd {
+    font-size: 10px;
+    padding: 0 4px;
+    margin-left: 3px;
+    border-color: rgba(24, 34, 8, 0.22);
+    background: rgba(24, 34, 8, 0.1);
+    color: inherit;
+  }
+  .torque-gate.is-off .torque-gate-action kbd {
+    border-color: var(--line);
+    background: var(--panel);
+    color: var(--ink);
+  }
   .btn {
     border: 1px solid var(--line);
     background: var(--panel-2);
@@ -188,6 +248,16 @@
   .btn.wide { width: 100%; margin-top: 8px; }
   .btn.quiet { background: transparent; color: var(--muted); }
   .btn.quiet:hover:not(:disabled) { color: var(--ink); }
+  .safety > .btn {
+    width: 176px;
+    height: 44px;
+    padding: 0 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+  }
+  .safety > .torque-gate { justify-content: center; }
 
   .message {
     margin: 0 20px;
@@ -435,7 +505,7 @@
   tbody tr { cursor: pointer; }
   tbody tr:hover { background: #171c25; }
   tbody tr.selected { background: #1d2717; }
-  .slider-row { display: grid; grid-template-columns: 105px minmax(0, 1fr) 82px; align-items: center; gap: 10px; margin-top: 10px; }
+  .slider-row { display: grid; grid-template-columns: 132px minmax(0, 1fr) 82px; align-items: center; gap: 10px; margin-top: 10px; }
   .slider-row label { font-size: 12px; color: var(--muted); }
   .slider-row output { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; text-align: right; color: var(--ink); }
   input[type="range"] { padding: 0; border: 0; background: transparent; box-shadow: none; accent-color: var(--accent); }
@@ -524,8 +594,11 @@
     </div>
     <div class="safety">
       <button class="btn ghost" id="keys-toggle" type="button" aria-pressed="false" title="Teleop keys turn on with the Teleop tab. Click to keep them on across tabs.">Key teleop: off</button>
-      <button class="btn ghost" id="hold" type="button">Torque on</button>
-      <button class="btn danger" id="estop" type="button" title="Esc stops the arm">E-stop<sup>Esc</sup></button>
+      <button class="btn torque-gate is-idle" id="torque-toggle" type="button" aria-pressed="false" disabled
+              title="When motors are on: press to torque off (Esc). When off: press to enable torque. Support the arm when torque is off.">
+        <span class="torque-gate-status">Motors off</span>
+        <span class="torque-gate-action">Connect an arm first</span>
+      </button>
     </div>
   </header>
 
@@ -767,6 +840,21 @@
       <!-- ================= CLICK AND PICK ================= -->
       <section class="panel" data-panel="pick" hidden>
         <article class="card">
+          <h2>Place</h2>
+          <p class="hint place-summary" style="margin-top:6px">Place: folded rest pose (default).</p>
+          <div class="row tight" style="margin-top:10px">
+            <button class="btn quiet place-set" type="button">Set place from arm</button>
+            <button class="btn quiet place-reset" type="button">Reset place to rest</button>
+          </div>
+          <p class="hint warn place-capture" hidden>Torque is off. Support the arm and move it to the destination pose, then press Confirm.</p>
+          <div class="slider-row">
+            <label for="place-jump-pick">Place jump height</label>
+            <input id="place-jump-pick" class="place-jump-range" type="range" min="0" max="25" step="1" value="5">
+            <output class="place-jump-value">5 cm</output>
+          </div>
+          <p class="hint place-jump-hint">After the pick, the arm lifts this far above the place point before lowering.</p>
+        </article>
+        <article class="card">
           <div class="card-head"><h2>Click and pick</h2><span class="hint" id="pick-busy"></span></div>
           <p class="hint" id="pick-summary">Click the image.</p>
           <div class="live-wrap"><div class="live-slot" id="slot-pick"></div><span class="live-label">Click to pick</span></div>
@@ -776,6 +864,21 @@
 
       <!-- ================= DETECT AND PICK ================= -->
       <section class="panel" data-panel="detect" hidden>
+        <article class="card">
+          <h2>Place</h2>
+          <p class="hint place-summary" style="margin-top:6px">Place: folded rest pose (default).</p>
+          <div class="row tight" style="margin-top:10px">
+            <button class="btn quiet place-set" type="button">Set place from arm</button>
+            <button class="btn quiet place-reset" type="button">Reset place to rest</button>
+          </div>
+          <p class="hint warn place-capture" hidden>Torque is off. Support the arm and move it to the destination pose, then press Confirm.</p>
+          <div class="slider-row">
+            <label for="place-jump-detect">Place jump height</label>
+            <input id="place-jump-detect" class="place-jump-range" type="range" min="0" max="25" step="1" value="5">
+            <output class="place-jump-value">5 cm</output>
+          </div>
+          <p class="hint place-jump-hint">After the pick, the arm lifts this far above the place point before lowering.</p>
+        </article>
         <article class="card">
           <div class="card-head"><h2>Detect and pick</h2><span class="hint" id="detect-busy"></span></div>
           <p class="hint">Click inside a box. The arm picks its centre.</p>
@@ -880,9 +983,13 @@
     cameraConnected: false,
     previewBusy: false,
     pickBusy: false,
+    placing: false,
+    placeBusy: false,
     keysOn: false,
     motorArmed: false,
     configTimer: 0,
+    placeJumpTimer: 0,
+    placeJumpUntil: 0,
     lastStatusError: "",
   };
   let socket = null;
@@ -1043,10 +1150,32 @@
       $("go-clearance").textContent = `Moves ${hover.toFixed(0)} mm above the table point.`;
     }
     if (Number.isFinite(height) && Number.isFinite(approach)) {
+      const jumpCm = Number(motion.place_jump_m) * 100;
+      const jump = Number.isFinite(jumpCm) ? jumpCm.toFixed(0) : "5";
       $("pick-summary").textContent =
         `Click the table to pick ${height.toFixed(0)} mm above it. ` +
-        `The arm stops ${approach.toFixed(0)} mm higher, then moves down, closes, and releases at rest.`;
+        `The arm stops ${approach.toFixed(0)} mm higher, then moves down, closes, ` +
+        `jumps ${jump} cm above the place point, and releases there.`;
     }
+    const jumpCm = Number(motion.place_jump_m) * 100;
+    if (Number.isFinite(jumpCm) && performance.now() > state.placeJumpUntil) {
+      syncPlaceJumpSliders(Math.round(jumpCm));
+    }
+    if (motion.place_joints) {
+      const text = placeSummary(motion);
+      document.querySelectorAll(".place-summary").forEach((node) => {
+        node.textContent = text;
+      });
+    }
+  }
+
+  const PLACE_JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"];
+
+  function placeSummary(motion) {
+    const joints = motion.place_joints || {};
+    const bits = PLACE_JOINTS.map((name) => `${name.replaceAll("_", " ")} ${Number(joints[name]).toFixed(1)}°`);
+    const prefix = motion.place_default ? "Place: folded rest pose (default)" : "Place: custom";
+    return `${prefix} · ${bits.join(" · ")}`;
   }
 
   function syncPortSteps() {
@@ -1299,6 +1428,7 @@
     renderHandEye(status);
     renderPose(arm);
     renderJoints(arm);
+    renderTorqueToggle(arm, status.estop);
 
     $("teleop-hint").textContent = arm.connected
       ? `Keys live${arm.mock ? " (mock)" : ""}.`
@@ -1805,9 +1935,142 @@
     refreshStatus();
   }
 
-  $("estop").addEventListener("click", estop);
-  $("hold").addEventListener("click", () => {
-    run(() => api("/api/hold", {}), (data) => data.message).then(refreshStatus);
+  function renderTorqueToggle(arm, estop) {
+    const button = $("torque-toggle");
+    const connected = Boolean(arm && arm.connected);
+    const on = Boolean(arm && arm.torque_on);
+    button.disabled = !connected;
+    button.setAttribute("aria-pressed", String(on));
+    button.classList.remove("is-on", "is-off", "is-idle", "good", "danger", "ghost");
+    if (!connected) {
+      button.classList.add("is-idle");
+      button.innerHTML =
+        '<span class="torque-gate-status">Motors off</span>' +
+        '<span class="torque-gate-action">Connect an arm first</span>';
+      button.title = "Connect an arm to control motor torque.";
+      button.setAttribute("aria-label", "Motors off. Arm not connected.");
+      return;
+    }
+    if (on) {
+      button.classList.add("is-on");
+      button.innerHTML =
+        '<span class="torque-gate-status">Motors on</span>' +
+        '<span class="torque-gate-action">Press to torque off <kbd>Esc</kbd></span>';
+      button.title = "Motors are holding. Press to E-stop and turn torque off — support the arm.";
+      button.setAttribute("aria-label", "Motors on. Press to torque off.");
+      return;
+    }
+    button.classList.add("is-off");
+    const latch = estop ? " E-stop is latched." : "";
+    button.innerHTML =
+      '<span class="torque-gate-status">Motors off</span>' +
+      '<span class="torque-gate-action">Press to enable torque</span>';
+    button.title = `Torque is off.${latch} Press to hold the current pose and turn motors on.`;
+    button.setAttribute("aria-label", "Motors off. Press to enable torque.");
+  }
+
+  $("torque-toggle").addEventListener("click", () => {
+    if (state.status?.arm?.torque_on) estop();
+    else {
+      state.placing = false;
+      renderPlaceCapture();
+      run(() => api("/api/hold", {}), (data) => data.message).then(refreshStatus);
+    }
+  });
+
+  function renderPlaceCapture() {
+    document.querySelectorAll(".place-set").forEach((button) => {
+      button.textContent = state.placing ? "Confirm place pose" : "Set place from arm";
+      button.classList.toggle("quiet", !state.placing);
+      button.classList.toggle("good", state.placing);
+    });
+    document.querySelectorAll(".place-capture").forEach((node) => {
+      node.hidden = !state.placing;
+    });
+  }
+
+  async function beginPlaceCapture() {
+    if (state.placeBusy) return;
+    state.placeBusy = true;
+    try {
+      const relaxed = await run(() => api("/api/relax", {}), () =>
+        "Torque off. Support the arm, move it to the destination pose, then press Confirm.");
+      if (!relaxed) return;
+      state.placing = true;
+      renderPlaceCapture();
+      refreshStatus();
+    } finally {
+      state.placeBusy = false;
+    }
+  }
+
+  async function confirmPlaceCapture() {
+    if (state.placeBusy) return;
+    state.placeBusy = true;
+    try {
+      const saved = await run(() => api("/api/place/set", {}));
+      if (!saved) return;
+      const held = await run(() => api("/api/hold", {}), () => "Place pose saved. Torque on.");
+      state.placing = false;
+      renderPlaceCapture();
+      if (!held) note("Place pose saved. Torque is still off.");
+      refreshStatus();
+    } finally {
+      state.placeBusy = false;
+    }
+  }
+
+  document.querySelectorAll(".place-set").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (state.placing) confirmPlaceCapture();
+      else beginPlaceCapture();
+    });
+  });
+  document.querySelectorAll(".place-reset").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const wasPlacing = state.placing;
+      state.placing = false;
+      renderPlaceCapture();
+      const reset = await run(() => api("/api/place/reset", {}), (data) => data.message);
+      if (wasPlacing && reset) {
+        await run(() => api("/api/hold", {}), () => "Place reset to rest. Torque on.");
+      }
+      refreshStatus();
+    });
+  });
+
+  function syncPlaceJumpSliders(cm) {
+    document.querySelectorAll(".place-jump-range").forEach((input) => {
+      input.value = String(cm);
+    });
+    document.querySelectorAll(".place-jump-value").forEach((node) => {
+      node.textContent = cm === 0 ? "0 cm (direct)" : `${cm} cm`;
+    });
+  }
+
+  function applyPlaceJump(event) {
+    const cm = Number(event.currentTarget.value);
+    if (!Number.isFinite(cm)) return;
+    state.placeJumpUntil = performance.now() + 1200;
+    syncPlaceJumpSliders(cm);
+    clearTimeout(state.placeJumpTimer);
+    state.placeJumpTimer = setTimeout(() => {
+      api("/api/place/jump", { jump_cm: cm })
+        .then((data) => {
+          note(data.message);
+          state.placeJumpUntil = 0;
+          refreshStatus();
+        })
+        .catch((error) => {
+          state.placeJumpUntil = 0;
+          note(error.message || String(error));
+          refreshStatus();
+        });
+    }, 180);
+  }
+
+  document.querySelectorAll(".place-jump-range").forEach((input) => {
+    input.addEventListener("input", applyPlaceJump);
   });
 
   /* ---------------- live image and tasks ---------------- */

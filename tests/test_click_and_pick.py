@@ -152,7 +152,7 @@ def test_pick_stops_above_then_comes_straight_down():
         assert calls[1][3] is None and calls[1][4] is True
         assert view.messages.index("Opening gripper") < view.messages.index("Closing gripper")
         assert view.messages.index("Holding the pick") < view.messages.index("Closing gripper")
-        assert view.messages.index("Holding the grasp") < view.messages.index("Returning to rest")
+        assert view.messages.index("Holding the grasp") < view.messages.index("Moving to place")
         assert seen[0][0] == "release"
         closed = next(event for event in seen if event[0] == "grip")
         assert np.linalg.norm([closed[1] - pick[0], closed[2] - pick[1], closed[3] - pick[2]]) < 0.015
@@ -163,7 +163,7 @@ def test_pick_stops_above_then_comes_straight_down():
         for name, angle in REST_JOINTS.items():
             assert opened[2][name] == pytest.approx(angle, abs=0.05)
         assert arm.get_joints()["gripper"] == pytest.approx(OPEN_PERCENT)
-        assert view.messages[-1] == "Released at rest"
+        assert view.messages[-1] == "Released at place"
 
 
 def test_hold_keeps_the_camera_updating():

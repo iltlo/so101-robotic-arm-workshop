@@ -421,9 +421,15 @@ class SO101:
         shoulder_lift -90°, elbow_flex 90°, wrist_flex 45°, pan and roll at 0°.
         Returns False when `cancel` stops the fold.
         """
+        return self.fold(REST_JOINTS, wait=wait, cancel=cancel, close_gripper=True)
+
+    def fold(self, joints: dict[str, float], *, wait: bool = True, cancel=None,
+             close_gripper: bool = False) -> bool:
+        """Move to joint targets. Optionally close the gripper when the move finishes."""
         self._drop_goal_marker()
-        arrived = self._move(dict(REST_JOINTS), wait=wait, cancel=cancel)
-        if arrived:
+        targets = {name: float(joints[name]) for name in JOINTS if name in joints}
+        arrived = self._move(targets, wait=wait, cancel=cancel)
+        if arrived and close_gripper:
             self.grip()
         return arrived
 
